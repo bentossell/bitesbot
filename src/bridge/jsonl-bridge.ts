@@ -8,6 +8,7 @@ import {
 	type BridgeEvent,
 	type ResumeToken,
 } from './jsonl-session.js'
+import { CronService, parseScheduleArg } from '../cron/index.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -26,14 +27,16 @@ export type BridgeHandle = {
 type CommandResult =
 	| { handled: false }
 	| { handled: true; response: string }
+	| { handled: true; response: string; async: true }
 
-const parseCommand = (
+const parseCommand = async (
 	text: string,
 	chatId: number | string,
 	manifests: Map<string, CLIManifest>,
 	defaultCli: string,
-	sessionStore: SessionStore
-): CommandResult => {
+	sessionStore: SessionStore,
+	cronService?: CronService
+): Promise<CommandResult> => {
 	const trimmed = text.trim()
 
 	if (trimmed.startsWith('/use ')) {
@@ -73,6 +76,54 @@ const parseCommand = (
 			lines.push(`Resume: ${resumeToken.sessionId.slice(0, 8)}...`)
 		}
 		return { handled: true, response: lines.join('\n') }
+	}
+
+	// Cron commands
+	if (cronService && trimmed.startsWith('/cron')) {
+		const args = trimmed.slice(5).trim()
+
+		if (args === '' || args === 'list') {
+			const jobs = await cronService.list()
+			return { handled: true, response: cronService.formatJobList(jobs) }
+		}
+
+		// /cron add "name" every 30m
+		// /cron add "name" cron "0 9 * * *"
+		const addMatch = args.match(/^add\s+"([^"]+)"\s+(.+)$/i)
+		if (addMatch) {
+			const [, name, scheduleArg] = addMatch
+			const schedule = parseScheduleArg(scheduleArg)
+			if (!schedule) {
+				return { handled: true, response: `Invalid schedule: ${scheduleArg}\nExamples: every 30m, every 1h, cron "0 9 * * *"` }
+			}
+			const job = await cronService.add({ name, schedule })
+			return { handled: true, response: `Created job: ${job.id}\n${name}\nNext run: ${job.nextRunAtMs ? new Date(job.nextRunAtMs).toLocaleString() : 'n/a'}` }
+		}
+
+		// /cron remove <id>
+		const removeMatch = args.match(/^remove\s+(\S+)$/i)
+		if (removeMatch) {
+			const removed = await cronService.remove(removeMatch[1])
+			return { handled: true, response: removed ? `Removed job: ${removeMatch[1]}` : `Job not found: ${removeMatch[1]}` }
+		}
+
+		// /cron run <id>
+		const runMatch = args.match(/^run\s+(\S+)$/i)
+		if (runMatch) {
+			const job = await cronService.run(runMatch[1])
+			return { handled: true, response: job ? `Running job: ${job.name}` : `Job not found: ${runMatch[1]}` }
+		}
+
+		// /cron enable/disable <id>
+		const enableMatch = args.match(/^(enable|disable)\s+(\S+)$/i)
+		if (enableMatch) {
+			const [, action, id] = enableMatch
+			const enabled = action.toLowerCase() === 'enable'
+			const success = await cronService.enable(id, enabled)
+			return { handled: true, response: success ? `Job ${id} ${enabled ? 'enabled' : 'disabled'}` : `Job not found: ${id}` }
+		}
+
+		return { handled: true, response: `Unknown cron command. Usage:\n/cron list\n/cron add "name" every 30m\n/cron add "name" cron "0 9 * * *"\n/cron remove <id>\n/cron run <id>\n/cron enable <id>\n/cron disable <id>` }
 	}
 
 	return { handled: false }
@@ -126,6 +177,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	}
 
 	const sessionStore = createSessionStore()
+	const cronService = new CronService()
+	await cronService.start()
 
 	const wsUrl = config.gatewayUrl.replace(/^http/, 'ws')
 	const wsEndpoint = wsUrl.endsWith('/events') ? wsUrl : `${wsUrl}/events`
@@ -140,18 +193,27 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const send = (chatId: number | string, text: string) =>
 		sendToGateway(config.gatewayUrl, config.authToken, chatId, text)
 
+	// Track the primary chat for cron job delivery
+	let primaryChatId: number | string | null = null
+
 	const handleMessage = async (message: IncomingMessage) => {
 		const { chatId, text } = message
 		if (!text) return
 
+		// Remember the chat for cron delivery
+		if (!primaryChatId) {
+			primaryChatId = chatId
+		}
+
 		console.log(`[jsonl-bridge] Received from ${chatId}: "${text.slice(0, 50)}..."`)
 
-		const cmdResult = parseCommand(
+		const cmdResult = await parseCommand(
 			text,
 			chatId,
 			manifests,
 			config.defaultCli,
-			sessionStore
+			sessionStore,
+			cronService
 		)
 		if (cmdResult.handled) {
 			console.log(`[jsonl-bridge] Command handled: ${text}`)
@@ -259,8 +321,32 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		console.log('[jsonl-bridge] Connected to gateway')
 	})
 
+	// Handle cron job triggers
+	cronService.on('event', async (evt) => {
+		if (evt.type !== 'job:due') return
+		if (!primaryChatId) {
+			console.log('[jsonl-bridge] Cron job due but no primary chat set')
+			return
+		}
+
+		console.log(`[jsonl-bridge] Cron job triggered: ${evt.job.name}`)
+		await send(primaryChatId, `⏰ Cron: ${evt.job.name}`)
+
+		// Send the job message as if it came from the user
+		void handleMessage({
+			id: `cron-${Date.now()}`,
+			chatId: primaryChatId,
+			text: evt.job.message,
+			userId: 'cron',
+			messageId: 0,
+			timestamp: new Date().toISOString(),
+			raw: { cron: true, jobId: evt.job.id },
+		})
+	})
+
 	return {
 		close: () => {
+			cronService.stop()
 			ws.close()
 			for (const session of sessionStore.sessions.values()) {
 				session.terminate()
