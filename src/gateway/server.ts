@@ -38,19 +38,39 @@ const resolvePath = (req: IncomingMessage) => {
 	return url.pathname
 }
 
+// Convert common markdown to Telegram MarkdownV2
+const toTelegramMarkdown = (text: string): string => {
+	let result = text
+
+	// Escape special chars that aren't part of formatting
+	result = result.replace(/([.!=|{}])/g, '\\$1')
+
+	// Convert **bold** to *bold* (Telegram style)
+	result = result.replace(/\*\*(.+?)\*\*/g, '*$1*')
+
+	// Convert - lists to • (Telegram doesn't support - as list marker)
+	result = result.replace(/^- /gm, '• ')
+
+	return result
+}
+
 const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 	const chatId = payload.chatId
 	if (payload.photoUrl) {
+		const caption = payload.caption ?? payload.text
 		return bot.api.sendPhoto(chatId, payload.photoUrl, {
-			caption: payload.caption ?? payload.text,
+			caption: caption ? toTelegramMarkdown(caption) : undefined,
 			reply_to_message_id: payload.replyToMessageId,
+			parse_mode: 'MarkdownV2',
 		})
 	}
 
 	if (payload.documentUrl) {
+		const caption = payload.caption ?? payload.text
 		return bot.api.sendDocument(chatId, payload.documentUrl, {
-			caption: payload.caption ?? payload.text,
+			caption: caption ? toTelegramMarkdown(caption) : undefined,
 			reply_to_message_id: payload.replyToMessageId,
+			parse_mode: 'MarkdownV2',
 		})
 	}
 
@@ -58,8 +78,9 @@ const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 		throw new Error('text is required when no attachment is provided')
 	}
 
-	return bot.api.sendMessage(chatId, payload.text, {
+	return bot.api.sendMessage(chatId, toTelegramMarkdown(payload.text), {
 		reply_to_message_id: payload.replyToMessageId,
+		parse_mode: 'MarkdownV2',
 	})
 }
 
