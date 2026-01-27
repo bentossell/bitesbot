@@ -1,0 +1,12 @@
+name: droid
+command: ~/.local/bin/droid
+args: []
+inputMode: jsonl
+
+resume:
+  flag: --continue
+  sessionArg: last
+
+model:
+  flag: --model
+  default: opus

@@ -2,12 +2,20 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+export type BridgeConfig = {
+	enabled: boolean
+	defaultCli: string
+	workingDirectory: string
+	adaptersDir: string
+}
+
 export type GatewayConfig = {
 	botToken: string
 	host: string
 	port: number
 	authToken?: string
 	configPath?: string
+	bridge: BridgeConfig
 }
 
 export type LoadConfigOptions = {
@@ -51,11 +59,20 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 	const port = parseNumber(env.TG_GATEWAY_PORT, fileConfig.port ?? DEFAULT_PORT) ?? DEFAULT_PORT
 	const authToken = env.TG_GATEWAY_AUTH_TOKEN ?? fileConfig.authToken
 
+	const fileBridge: Partial<BridgeConfig> = fileConfig.bridge ?? {}
+	const bridge: BridgeConfig = {
+		enabled: env.TG_GATEWAY_BRIDGE_ENABLED === 'true' || fileBridge.enabled === true,
+		defaultCli: env.TG_GATEWAY_DEFAULT_CLI ?? fileBridge.defaultCli ?? 'claude',
+		workingDirectory: env.TG_GATEWAY_WORKING_DIR ?? fileBridge.workingDirectory ?? process.cwd(),
+		adaptersDir: env.TG_GATEWAY_ADAPTERS_DIR ?? fileBridge.adaptersDir ?? join(process.cwd(), 'adapters'),
+	}
+
 	return {
 		botToken,
 		host,
 		port,
 		authToken,
 		configPath,
+		bridge,
 	}
 }

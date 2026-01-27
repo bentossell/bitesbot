@@ -13,7 +13,8 @@
 	],
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
-		"dev": "tsx src/daemon/cli.ts start",
+		"dev": "tsx watch src/daemon/cli.ts start",
+		"dev:once": "tsx src/daemon/cli.ts start",
 		"lint": "eslint .",
 		"typecheck": "tsc -p tsconfig.test.json --noEmit",
 		"test": "vitest run"
@@ -21,7 +22,9 @@
 	"dependencies": {
 		"commander": "^12.1.0",
 		"grammy": "^1.25.1",
-		"ws": "^8.18.0"
+		"node-pty": "^1.1.0",
+		"ws": "^8.18.0",
+		"yaml": "^2.8.2"
 	},
 	"devDependencies": {
 		"@types/node": "^22.13.1",

@@ -1,0 +1,13 @@
+name: claude
+command: /opt/homebrew/bin/claude
+args:
+  - --dangerously-skip-permissions
+inputMode: jsonl
+
+resume:
+  flag: --resume
+  sessionArg: last
+
+model:
+  flag: --model
+  default: sonnet

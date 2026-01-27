@@ -1,0 +1,379 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { createInterface, type Interface } from 'node:readline'
+import type { CLIManifest } from './manifest.js'
+
+export type SessionState = 'active' | 'suspended' | 'completed'
+
+export type ResumeToken = {
+	engine: string
+	sessionId: string
+}
+
+// Claude Code events
+export type ClaudeEvent =
+	| { type: 'system'; subtype: string; session_id?: string; model?: string }
+	| { type: 'assistant'; message: { content: ContentBlock[] }; parent_tool_use_id?: string }
+	| { type: 'user'; message: { content: ContentBlock[] } }
+	| { type: 'result'; session_id: string; result?: string; is_error: boolean; total_cost_usd?: number }
+
+// Droid events
+export type DroidEvent =
+	| { type: 'system'; subtype: string; session_id?: string; model?: string }
+	| { type: 'session_start'; session_id: string; model?: string }
+	| { type: 'message'; role: 'user' | 'assistant'; text: string; session_id?: string }
+	| { type: 'thinking'; text: string; session_id?: string }
+	| { type: 'tool_start'; tool: string; id: string; input: Record<string, unknown>; session_id?: string }
+	| { type: 'tool_end'; id: string; output?: string; error?: string; session_id?: string }
+	| { type: 'completion'; finalText: string; session_id?: string; numTurns?: number }
+
+export type ContentBlock =
+	| { type: 'text'; text: string }
+	| { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+	| { type: 'tool_result'; tool_use_id: string; content?: string | unknown[]; is_error?: boolean }
+	| { type: 'thinking'; thinking: string }
+
+type JsonlEvent = ClaudeEvent | DroidEvent
+
+export type BridgeEvent =
+	| { type: 'started'; sessionId: string; model?: string }
+	| { type: 'tool_start'; toolId: string; name: string; input: Record<string, unknown> }
+	| { type: 'tool_end'; toolId: string; isError: boolean; preview?: string }
+	| { type: 'thinking'; text: string }
+	| { type: 'text'; text: string }
+	| { type: 'completed'; sessionId: string; answer: string; isError: boolean; cost?: number }
+	| { type: 'error'; message: string }
+
+export type SessionInfo = {
+	id: string
+	chatId: number | string
+	cli: string
+	state: SessionState
+	lastActivity: Date
+	resumeToken?: ResumeToken
+}
+
+export type JsonlSessionEvents = {
+	event: [BridgeEvent]
+	exit: [number]
+}
+
+export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
+	readonly id: string
+	readonly chatId: number | string
+	readonly cli: string
+	private process: ChildProcess | null = null
+	private readline: Interface | null = null
+	private _state: SessionState = 'suspended'
+	private _lastActivity: Date = new Date()
+	private _resumeToken?: ResumeToken
+	private _lastText: string = ''
+	private pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
+
+	constructor(
+		chatId: number | string,
+		private manifest: CLIManifest,
+		private workingDir: string
+	) {
+		super()
+		this.id = `${chatId}-${Date.now()}`
+		this.chatId = chatId
+		this.cli = manifest.name
+	}
+
+	get state(): SessionState {
+		return this._state
+	}
+
+	get lastActivity(): Date {
+		return this._lastActivity
+	}
+
+	get resumeToken(): ResumeToken | undefined {
+		return this._resumeToken
+	}
+
+	getInfo(): SessionInfo {
+		return {
+			id: this.id,
+			chatId: this.chatId,
+			cli: this.cli,
+			state: this._state,
+			lastActivity: this._lastActivity,
+			resumeToken: this._resumeToken,
+		}
+	}
+
+	run(prompt: string, resume?: ResumeToken): void {
+		if (this.process) {
+			console.log(`[jsonl-session] Process already running for ${this.chatId}`)
+			return
+		}
+
+		let args: string[]
+
+		// Quote the prompt for shell execution
+		const quotedPrompt = `"${prompt.replace(/"/g, '\\"')}"`
+
+		if (this.cli === 'droid') {
+			// Droid uses: droid exec --output-format stream-json --auto high "prompt"
+			args = [
+				'exec',
+				'--output-format', 'stream-json',
+				'--auto', 'high',
+				...this.manifest.args,
+			]
+			if (resume?.sessionId) {
+				args.push('-s', resume.sessionId)
+			}
+			args.push(quotedPrompt)
+		} else {
+			// Claude uses: claude -p --output-format stream-json --verbose "prompt"
+			args = [
+				'-p',
+				'--output-format', 'stream-json',
+				'--verbose',
+				...this.manifest.args,
+			]
+			if (resume?.sessionId) {
+				args.push('--resume', resume.sessionId)
+			}
+			args.push(quotedPrompt)
+		}
+
+		console.log(`[jsonl-session] Spawning: ${this.manifest.command} ${args.join(' ')}`)
+		console.log(`[jsonl-session] Working dir: ${this.workingDir}`)
+
+		this.process = spawn(this.manifest.command, args, {
+			cwd: this.workingDir,
+			env: process.env,
+			stdio: ['pipe', 'pipe', 'pipe'],
+			shell: true,
+		})
+
+		// Close stdin to signal we're done sending input
+		this.process.stdin?.end()
+
+		this._state = 'active'
+		this._lastActivity = new Date()
+
+		this.readline = createInterface({ input: this.process.stdout! })
+		this.readline.on('line', (line) => this.handleLine(line))
+
+		this.process.stderr?.on('data', (data) => {
+			const text = data.toString().trim()
+			if (text) {
+				console.log(`[jsonl-session] stderr: ${text}`)
+			}
+		})
+
+		this.process.on('exit', (code) => {
+			console.log(`[jsonl-session] Process exited with code ${code}`)
+			this._state = 'completed'
+			this.process = null
+			this.readline = null
+			this.emit('exit', code ?? 0)
+		})
+
+		this.process.on('error', (err) => {
+			console.error(`[jsonl-session] Process error:`, err)
+			this.emit('event', { type: 'error', message: err.message })
+		})
+	}
+
+	private handleLine(line: string): void {
+		this._lastActivity = new Date()
+
+		if (!line.trim()) return
+
+		try {
+			const event = JSON.parse(line) as ClaudeEvent
+			this.translateEvent(event)
+		} catch (err) {
+			console.log(`[jsonl-session] Non-JSON line: ${line.slice(0, 100)}`)
+		}
+	}
+
+	private translateEvent(event: JsonlEvent): void {
+		switch (event.type) {
+			case 'system':
+				if (event.subtype === 'init' && event.session_id) {
+					this._resumeToken = { engine: this.cli, sessionId: event.session_id }
+					this.emit('event', {
+						type: 'started',
+						sessionId: event.session_id,
+						model: event.model,
+					})
+				}
+				break
+
+			// Claude: assistant message with content blocks
+			case 'assistant':
+				if ('message' in event && event.message?.content) {
+					for (const block of event.message.content) {
+						switch (block.type) {
+							case 'text':
+								this._lastText = block.text
+								this.emit('event', { type: 'text', text: block.text })
+								break
+							case 'tool_use':
+								this.pendingTools.set(block.id, { name: block.name, input: block.input })
+								this.emit('event', {
+									type: 'tool_start',
+									toolId: block.id,
+									name: block.name,
+									input: block.input,
+								})
+								break
+							case 'thinking':
+								this.emit('event', { type: 'thinking', text: block.thinking })
+								break
+						}
+					}
+				}
+				break
+
+			// Droid: message event
+			case 'message':
+				if ('role' in event && event.role === 'assistant' && event.text) {
+					this._lastText = event.text
+					this.emit('event', { type: 'text', text: event.text })
+				}
+				break
+
+			// Droid: thinking event
+			case 'thinking':
+				if ('text' in event && event.text) {
+					this.emit('event', { type: 'thinking', text: event.text })
+				}
+				break
+
+			// Droid: session_start (alternative to system init)
+			case 'session_start':
+				if ('session_id' in event) {
+					this._resumeToken = { engine: this.cli, sessionId: event.session_id }
+					this.emit('event', {
+						type: 'started',
+						sessionId: event.session_id,
+						model: event.model,
+					})
+				}
+				break
+
+			// Droid: tool_start
+			case 'tool_start':
+				if ('tool' in event) {
+					this.pendingTools.set(event.id, { name: event.tool, input: event.input })
+					this.emit('event', {
+						type: 'tool_start',
+						toolId: event.id,
+						name: event.tool,
+						input: event.input,
+					})
+				}
+				break
+
+			// Droid: tool_end
+			case 'tool_end':
+				if ('id' in event) {
+					this.pendingTools.delete(event.id)
+					this.emit('event', {
+						type: 'tool_end',
+						toolId: event.id,
+						isError: !!event.error,
+						preview: event.output?.slice(0, 200),
+					})
+				}
+				break
+
+			// Claude: user message (tool results)
+			case 'user':
+				if ('message' in event && Array.isArray(event.message?.content)) {
+					for (const block of event.message.content) {
+						if (block.type === 'tool_result') {
+							this.pendingTools.delete(block.tool_use_id)
+							const preview = typeof block.content === 'string'
+								? block.content.slice(0, 200)
+								: undefined
+							this.emit('event', {
+								type: 'tool_end',
+								toolId: block.tool_use_id,
+								isError: block.is_error ?? false,
+								preview,
+							})
+						}
+					}
+				}
+				break
+
+			// Claude: result
+			case 'result':
+				if ('session_id' in event) {
+					this._resumeToken = { engine: this.cli, sessionId: event.session_id }
+					this.emit('event', {
+						type: 'completed',
+						sessionId: event.session_id,
+						answer: event.result || this._lastText,
+						isError: event.is_error,
+						cost: event.total_cost_usd,
+					})
+				}
+				break
+
+			// Droid: completion
+			case 'completion':
+				if ('finalText' in event) {
+					const sessionId = event.session_id || this._resumeToken?.sessionId || 'unknown'
+					this._resumeToken = { engine: this.cli, sessionId }
+					this.emit('event', {
+						type: 'completed',
+						sessionId,
+						answer: event.finalText || this._lastText,
+						isError: false,
+					})
+				}
+				break
+		}
+	}
+
+	terminate(): void {
+		if (this.process) {
+			this.process.kill('SIGTERM')
+			this.process = null
+		}
+		this.readline = null
+		this._state = 'suspended'
+	}
+}
+
+export type SessionStore = {
+	sessions: Map<number | string, JsonlSession>
+	resumeTokens: Map<string, ResumeToken> // key: `${chatId}:${cli}`
+	activeCli: Map<number | string, string> // tracks which CLI is active per chat
+	get: (chatId: number | string) => JsonlSession | undefined
+	set: (session: JsonlSession) => void
+	delete: (chatId: number | string) => void
+	getResumeToken: (chatId: number | string, cli: string) => ResumeToken | undefined
+	setResumeToken: (chatId: number | string, cli: string, token: ResumeToken) => void
+	getActiveCli: (chatId: number | string) => string | undefined
+	setActiveCli: (chatId: number | string, cli: string) => void
+}
+
+export const createSessionStore = (): SessionStore => {
+	const sessions = new Map<number | string, JsonlSession>()
+	const resumeTokens = new Map<string, ResumeToken>()
+	const activeCli = new Map<number | string, string>()
+
+	return {
+		sessions,
+		resumeTokens,
+		activeCli,
+		get: (chatId) => sessions.get(chatId),
+		set: (session) => sessions.set(session.chatId, session),
+		delete: (chatId) => sessions.delete(chatId),
+		getResumeToken: (chatId, cli) => resumeTokens.get(`${chatId}:${cli}`),
+		setResumeToken: (chatId, cli, token) => resumeTokens.set(`${chatId}:${cli}`, token),
+		getActiveCli: (chatId) => activeCli.get(chatId),
+		setActiveCli: (chatId, cli) => activeCli.set(chatId, cli),
+	}
+}
