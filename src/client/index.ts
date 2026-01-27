@@ -50,6 +50,18 @@ export const createGatewayClient = (options: GatewayClientOptions) => {
 		return (await res.json()) as SendResponse
 	}
 
+	const typing = async (chatId: number | string) => {
+		const res = await fetch(`${baseUrl}/typing`, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				...authHeaders(options.authToken),
+			},
+			body: JSON.stringify({ chatId }),
+		})
+		return (await res.json()) as { ok: boolean; error?: string }
+	}
+
 	const connectEvents = (onEvent: (event: GatewayEvent) => void) => {
 		const ws = new WebSocket(wsUrl, {
 			headers: authHeaders(options.authToken),
@@ -71,6 +83,7 @@ export const createGatewayClient = (options: GatewayClientOptions) => {
 		health,
 		status,
 		send,
+		typing,
 		connectEvents,
 	}
 }

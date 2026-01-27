@@ -25,6 +25,10 @@ export type OutboundMessage = {
 	replyToMessageId?: number
 }
 
+export type TypingRequest = {
+	chatId: number | string
+}
+
 export type GatewayEvent =
 	| { type: 'message.received'; payload: IncomingMessage }
 	| { type: 'message.sent'; payload: { chatId: number | string; messageId?: number } }

@@ -60,6 +60,16 @@ const parseCommand = async (
 		return { handled: true, response: 'Session cleared. Next message starts fresh.' }
 	}
 
+	if (trimmed === '/stop') {
+		const session = sessionStore.get(chatId)
+		if (session) {
+			session.terminate()
+			sessionStore.delete(chatId)
+			return { handled: true, response: '🛑 Session stopped.' }
+		}
+		return { handled: true, response: 'No active session to stop.' }
+	}
+
 	if (trimmed === '/status') {
 		const session = sessionStore.get(chatId)
 		const currentCli = sessionStore.getActiveCli(chatId) || session?.cli || defaultCli
@@ -152,6 +162,28 @@ const sendToGateway = async (
 	}
 }
 
+const sendTyping = async (
+	baseUrl: string,
+	authToken: string | undefined,
+	chatId: number | string
+) => {
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+	if (authToken) {
+		headers.Authorization = `Bearer ${authToken}`
+	}
+
+	const httpUrl = baseUrl.replace(/^ws/, 'http').replace('/events', '')
+	try {
+		await fetch(`${httpUrl}/typing`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ chatId }),
+		})
+	} catch {
+		// ignore typing errors
+	}
+}
+
 const formatToolName = (name: string): string => {
 	const icons: Record<string, string> = {
 		Read: '📖',
@@ -193,19 +225,23 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const send = (chatId: number | string, text: string) =>
 		sendToGateway(config.gatewayUrl, config.authToken, chatId, text)
 
+	const typing = (chatId: number | string) =>
+		sendTyping(config.gatewayUrl, config.authToken, chatId)
+
 	// Track the primary chat for cron job delivery
 	let primaryChatId: number | string | null = null
 
 	const handleMessage = async (message: IncomingMessage) => {
 		const { chatId, text } = message
 		if (!text) return
+		const t0 = Date.now()
 
 		// Remember the chat for cron delivery
 		if (!primaryChatId) {
 			primaryChatId = chatId
 		}
 
-		console.log(`[jsonl-bridge] Received from ${chatId}: "${text.slice(0, 50)}..."`)
+		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Received from ${chatId}: "${text.slice(0, 50)}..."`)
 
 		const cmdResult = await parseCommand(
 			text,
@@ -233,7 +269,19 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		// Get existing resume token for this specific CLI
 		const resumeToken = sessionStore.getResumeToken(chatId, cliName)
 
-		console.log(`[jsonl-bridge] Starting ${cliName} session for ${chatId}${resumeToken ? ' (resuming)' : ''}`)
+		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Starting ${cliName} session for ${chatId}${resumeToken ? ' (resuming)' : ''}`)
+
+		// Start typing immediately (before CLI spawns)
+		let typingInterval: ReturnType<typeof setInterval> | null = null
+		void typing(chatId)
+		typingInterval = setInterval(() => void typing(chatId), 4000)
+
+		const stopTypingLoop = () => {
+			if (typingInterval) {
+				clearInterval(typingInterval)
+				typingInterval = null
+			}
+		}
 
 		const session = new JsonlSession(chatId, manifest, config.workingDirectory)
 		sessionStore.set(session)
@@ -243,9 +291,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		session.on('event', async (evt: BridgeEvent) => {
 			switch (evt.type) {
 				case 'started':
-					console.log(`[jsonl-bridge] Session started: ${evt.sessionId}`)
+					console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Session started: ${evt.sessionId}`)
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
-					await send(chatId, `🤖 ${cliName} is working...`)
 					break
 
 				case 'thinking':
@@ -270,6 +317,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					break
 
 				case 'completed':
+					stopTypingLoop()
 					console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 					if (evt.answer) {
@@ -284,12 +332,14 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					break
 
 				case 'error':
+					stopTypingLoop()
 					await send(chatId, `❌ ${evt.message}`)
 					break
 			}
 		})
 
 		session.on('exit', (code) => {
+			stopTypingLoop()
 			console.log(`[jsonl-bridge] Session exited with code ${code}`)
 			sessionStore.delete(chatId)
 		})

@@ -11,6 +11,7 @@ import type {
 	OutboundMessage,
 	SendResponse,
 	StatusResponse,
+	TypingRequest,
 } from '../protocol/types.js'
 import { PROTOCOL_VERSION } from '../protocol/types.js'
 
@@ -18,6 +19,7 @@ export type GatewayServerHandle = {
 	close: () => Promise<void>
 	startedAt: Date
 	getConnections: () => number
+	notifyRestart: () => Promise<void>
 }
 
 const readBody = async (req: IncomingMessage) => {
@@ -88,9 +90,18 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 	const bot = new Bot(config.botToken)
 	const startedAt = new Date()
 	let botInfo: Awaited<ReturnType<typeof bot.api.getMe>> | undefined
+	const activeChats = new Set<number>()
+	let lastActiveChatId: number | undefined
 
 	try {
 		botInfo = await bot.api.getMe()
+		// Register slash commands menu
+		await bot.api.setMyCommands([
+			{ command: 'new', description: 'Start a new session' },
+			{ command: 'stop', description: 'Stop current session' },
+			{ command: 'status', description: 'Show current session status' },
+			{ command: 'use', description: 'Switch CLI (e.g. /use claude)' },
+		])
 	} catch {
 		botInfo = undefined
 	}
@@ -147,6 +158,20 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			return
 		}
 
+		if (req.method === 'POST' && path === '/typing') {
+			try {
+				const raw = await readBody(req)
+				const payload = JSON.parse(raw) as TypingRequest
+				const chatId = typeof payload.chatId === 'string' ? Number.parseInt(payload.chatId, 10) : payload.chatId
+				await bot.api.sendChatAction(chatId, 'typing')
+				sendJson(res, 200, { ok: true })
+			} catch (error) {
+				const message = error instanceof Error ? error.message : 'unknown error'
+				sendJson(res, 400, { ok: false, error: message })
+			}
+			return
+		}
+
 		sendJson(res, 404, { ok: false, error: 'not found' })
 	})
 
@@ -174,6 +199,9 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 	})
 
 	bot.on('message', (ctx) => {
+		const chatId = ctx.message.chat.id
+		activeChats.add(chatId)
+		lastActiveChatId = chatId
 		const normalized = normalizeMessage(ctx.message)
 		broadcast({ type: 'message.received', payload: normalized })
 	})
@@ -188,10 +216,42 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 
 	void bot.start()
 
+	const notifyRestart = async () => {
+		if (lastActiveChatId) {
+			try {
+				await bot.api.sendMessage(lastActiveChatId, '🔄 Gateway restarted')
+			} catch {
+				// ignore errors during restart notification
+			}
+		}
+	}
+
+	const notifyError = async (chatId: number, message: string) => {
+		try {
+			await bot.api.sendMessage(chatId, `⚠️ ${message}`)
+		} catch {
+			// ignore errors during error notification
+		}
+	}
+
+	// Send typing indicator
+	const sendTyping = async (chatId: number) => {
+		try {
+			await bot.api.sendChatAction(chatId, 'typing')
+		} catch {
+			// ignore typing errors
+		}
+	}
+
 	return {
 		startedAt,
 		getConnections: () => wss.clients.size,
+		notifyRestart,
 		close: async () => {
+			// Notify active chats about shutdown
+			for (const chatId of activeChats) {
+				await notifyError(chatId, 'Gateway disconnected').catch(() => {})
+			}
 			wss.close()
 			await bot.stop()
 			await new Promise<void>((resolve) => server.close(() => resolve()))

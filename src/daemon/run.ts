@@ -6,12 +6,18 @@ import { removePidFile, writePidFile } from './pid.js'
 export type RunOptions = {
 	configPath?: string
 	env?: NodeJS.ProcessEnv
+	notifyRestart?: boolean
 }
 
 export const runGateway = async (options: RunOptions = {}) => {
 	const config = await loadConfig({ configPath: options.configPath, env: options.env })
 	const server = await startGatewayServer(config)
 	await writePidFile(process.pid)
+
+	// Notify users about gateway restart
+	if (options.notifyRestart !== false) {
+		await server.notifyRestart().catch(() => {})
+	}
 
 	let bridge: BridgeHandle | undefined
 
