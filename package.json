@@ -19,7 +19,12 @@
 		"dev:once": "tsx src/daemon/cli.ts start",
 		"lint": "eslint .",
 		"typecheck": "tsc -p tsconfig.test.json --noEmit",
-		"test": "vitest run"
+		"test": "vitest run",
+		"test:unit": "vitest run --exclude '**/*.e2e.ts'",
+		"test:e2e": "vitest run tests/*.e2e.ts",
+		"test:integration": "vitest run --grep 'integration|e2e'",
+		"precommit": "npm run typecheck && npm run lint && npm run test:unit",
+		"prepare": "husky"
 	},
 	"dependencies": {
 		"commander": "^12.1.0",
@@ -35,6 +40,7 @@
 		"@typescript-eslint/parser": "^8.23.0",
 		"eslint": "^9.19.0",
 		"globals": "^15.14.0",
+		"husky": "^9.1.7",
 		"tsx": "^4.19.2",
 		"typescript": "^5.7.3",
 		"vitest": "^2.1.9"
