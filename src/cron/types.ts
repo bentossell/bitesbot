@@ -5,6 +5,12 @@ export type CronSchedule =
 
 export type WakeMode = 'now' | 'next-heartbeat'
 
+/** Session target for cron jobs */
+export type SessionTarget = 'main' | 'isolated'
+
+/** Thinking level for models that support it (e.g., Opus) */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high'
+
 export type CronJob = {
 	id: string
 	name: string
@@ -17,6 +23,16 @@ export type CronJob = {
 	lastRunAtMs?: number
 	lastStatus?: 'ok' | 'error'
 	lastError?: string
+	/** Run in isolated session (cron:<jobId>) or main chat session */
+	sessionTarget?: SessionTarget
+	/** Model override for this job (e.g., 'opus', 'sonnet', 'codex') */
+	model?: string
+	/** Thinking level override (for models that support extended thinking) */
+	thinking?: ThinkingLevel
+	/** Summary of last run (for isolated jobs) */
+	lastSummary?: string
+	/** Duration of last run in ms */
+	lastDurationMs?: number
 }
 
 export type CronStore = {
@@ -29,4 +45,20 @@ export type CronJobCreate = {
 	schedule: CronSchedule
 	message?: string
 	wakeMode?: WakeMode
+	sessionTarget?: SessionTarget
+	model?: string
+	thinking?: ThinkingLevel
+}
+
+/** A single cron run record for history */
+export type CronRunRecord = {
+	jobId: string
+	jobName: string
+	startedAtMs: number
+	completedAtMs?: number
+	durationMs?: number
+	status: 'running' | 'ok' | 'error' | 'skipped'
+	error?: string
+	summary?: string
+	model?: string
 }
