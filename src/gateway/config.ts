@@ -15,6 +15,7 @@ export type GatewayConfig = {
 	port: number
 	authToken?: string
 	configPath?: string
+	allowedChatIds?: number[]
 	bridge: BridgeConfig
 }
 
@@ -59,6 +60,15 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 	const port = parseNumber(env.TG_GATEWAY_PORT, fileConfig.port ?? DEFAULT_PORT) ?? DEFAULT_PORT
 	const authToken = env.TG_GATEWAY_AUTH_TOKEN ?? fileConfig.authToken
 
+	// Parse allowed chat IDs from env (comma-separated) or config file
+	const parseAllowedChatIds = (envValue?: string, fileValue?: number[]): number[] | undefined => {
+		if (envValue) {
+			return envValue.split(',').map((id) => Number.parseInt(id.trim(), 10)).filter((id) => !Number.isNaN(id))
+		}
+		return fileValue
+	}
+	const allowedChatIds = parseAllowedChatIds(env.TG_GATEWAY_ALLOWED_CHAT_IDS, fileConfig.allowedChatIds)
+
 	const fileBridge: Partial<BridgeConfig> = fileConfig.bridge ?? {}
 	const bridge: BridgeConfig = {
 		enabled: env.TG_GATEWAY_BRIDGE_ENABLED === 'true' || fileBridge.enabled === true,
@@ -73,6 +83,7 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 		port,
 		authToken,
 		configPath,
+		allowedChatIds,
 		bridge,
 	}
 }

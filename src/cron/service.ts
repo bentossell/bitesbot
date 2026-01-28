@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { CronJob, CronJobCreate, CronStore, WakeMode } from './types.js'
+import type { CronJob, CronJobCreate, CronStore } from './types.js'
 import { loadCronStore, saveCronStore, generateId, findJob, updateJob, removeJob, addJob } from './store.js'
 import { calculateNextRun, isDue, formatSchedule } from './scheduler.js'
 

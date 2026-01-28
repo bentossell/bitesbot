@@ -3,6 +3,7 @@ export const PROTOCOL_VERSION = 1
 export type Attachment = {
 	type: 'photo' | 'document'
 	fileId: string
+	localPath?: string // Populated after download
 }
 
 export type IncomingMessage = {

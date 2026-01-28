@@ -1,10 +1,17 @@
 import { createServer } from 'node:http'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage as HttpIncomingMessage, ServerResponse } from 'node:http'
+import { createWriteStream } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { Bot } from 'grammy'
 import { WebSocketServer } from 'ws'
 import { isAuthorized } from './auth.js'
 import type { GatewayConfig } from './config.js'
 import { normalizeMessage } from './normalize.js'
+import { toTelegramMarkdown } from './telegram-markdown.js'
+import { logToFile } from '../logging/file.js'
 import type {
 	GatewayEvent,
 	HealthResponse,
@@ -22,7 +29,7 @@ export type GatewayServerHandle = {
 	notifyRestart: () => Promise<void>
 }
 
-const readBody = async (req: IncomingMessage) => {
+const readBody = async (req: HttpIncomingMessage) => {
 	const chunks: Buffer[] = []
 	for await (const chunk of req) {
 		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
@@ -35,25 +42,34 @@ const sendJson = (res: ServerResponse, status: number, payload: unknown) => {
 	res.end(JSON.stringify(payload))
 }
 
-const resolvePath = (req: IncomingMessage) => {
+const resolvePath = (req: HttpIncomingMessage) => {
 	const url = new URL(req.url ?? '/', 'http://localhost')
 	return url.pathname
 }
 
-// Convert common markdown to Telegram MarkdownV2
-const toTelegramMarkdown = (text: string): string => {
-	let result = text
-
-	// Escape special chars that aren't part of formatting
-	result = result.replace(/([.!=|{}])/g, '\\$1')
-
-	// Convert **bold** to *bold* (Telegram style)
-	result = result.replace(/\*\*(.+?)\*\*/g, '*$1*')
-
-	// Convert - lists to • (Telegram doesn't support - as list marker)
-	result = result.replace(/^- /gm, '• ')
-
-	return result
+// Download a Telegram file to local temp directory
+const downloadTelegramFile = async (bot: Bot, fileId: string, type: 'photo' | 'document'): Promise<string> => {
+	const file = await bot.api.getFile(fileId)
+	if (!file.file_path) {
+		throw new Error('No file_path returned from Telegram')
+	}
+	
+	const ext = type === 'photo' ? 'jpg' : (file.file_path.split('.').pop() || 'bin')
+	const localDir = join(tmpdir(), 'agent-gateway-files')
+	await mkdir(localDir, { recursive: true })
+	const localPath = join(localDir, `${fileId}.${ext}`)
+	
+	const fileUrl = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`
+	const response = await fetch(fileUrl)
+	if (!response.ok || !response.body) {
+		throw new Error(`Failed to download file: ${response.status}`)
+	}
+	
+	const writeStream = createWriteStream(localPath)
+	// Readable stream compatibility
+	await pipeline(response.body as unknown as NodeJS.ReadableStream, writeStream)
+	
+	return localPath
 }
 
 const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
@@ -137,9 +153,10 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 		}
 
 		if (req.method === 'POST' && path === '/send') {
+			let payload: OutboundMessage | undefined
 			try {
 				const raw = await readBody(req)
-				const payload = JSON.parse(raw) as OutboundMessage
+				payload = JSON.parse(raw) as OutboundMessage
 				const response = await sendOutboundMessage(bot, payload)
 				const sendResponse: SendResponse = {
 					ok: true,
@@ -152,6 +169,16 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 				sendJson(res, 200, sendResponse)
 			} catch (error) {
 				const message = error instanceof Error ? error.message : 'unknown error'
+				const preview = typeof error === 'object' ? JSON.stringify(error, null, 2).slice(0, 1000) : undefined
+				void logToFile('error', 'send failed', {
+					error: message,
+					chatId: payload?.chatId,
+					textLength: payload?.text?.length,
+					textPreview: payload?.text?.slice(0, 200),
+					photoUrl: payload?.photoUrl,
+					documentUrl: payload?.documentUrl,
+					errorDetails: preview,
+				})
 				broadcast({ type: 'error', payload: { message } })
 				sendJson(res, 400, { ok: false, error: message })
 			}
@@ -198,15 +225,40 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 		})
 	})
 
-	bot.on('message', (ctx) => {
+	bot.on('message', async (ctx) => {
 		const chatId = ctx.message.chat.id
+
+		// Filter by allowed chat IDs if configured
+		if (config.allowedChatIds && config.allowedChatIds.length > 0) {
+			if (!config.allowedChatIds.includes(chatId)) {
+				void logToFile('info', 'message ignored from unauthorized chat', { chatId })
+				return
+			}
+		}
+
 		activeChats.add(chatId)
 		lastActiveChatId = chatId
 		const normalized = normalizeMessage(ctx.message)
+		
+		// Download attachments to local files
+		if (normalized.attachments?.length) {
+			for (const attachment of normalized.attachments) {
+				try {
+					const localPath = await downloadTelegramFile(bot, attachment.fileId, attachment.type)
+					attachment.localPath = localPath
+					void logToFile('info', 'downloaded attachment', { fileId: attachment.fileId, localPath })
+				} catch (err) {
+					const message = err instanceof Error ? err.message : 'unknown error'
+					void logToFile('error', 'failed to download attachment', { fileId: attachment.fileId, error: message })
+				}
+			}
+		}
+		
 		broadcast({ type: 'message.received', payload: normalized })
 	})
 
 	bot.catch((error) => {
+		void logToFile('error', 'bot error', { error: error.message })
 		broadcast({ type: 'error', payload: { message: error.message } })
 	})
 
@@ -231,15 +283,6 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			await bot.api.sendMessage(chatId, `⚠️ ${message}`)
 		} catch {
 			// ignore errors during error notification
-		}
-	}
-
-	// Send typing indicator
-	const sendTyping = async (chatId: number) => {
-		try {
-			await bot.api.sendChatAction(chatId, 'typing')
-		} catch {
-			// ignore typing errors
 		}
 	}
 

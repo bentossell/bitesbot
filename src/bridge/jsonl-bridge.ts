@@ -6,9 +6,10 @@ import {
 	createSessionStore,
 	type SessionStore,
 	type BridgeEvent,
-	type ResumeToken,
 } from './jsonl-session.js'
+import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
+import { logToFile } from '../logging/file.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -35,7 +36,8 @@ const parseCommand = async (
 	manifests: Map<string, CLIManifest>,
 	defaultCli: string,
 	sessionStore: SessionStore,
-	cronService?: CronService
+	cronService?: CronService,
+	persistentStore?: PersistentSessionStore
 ): Promise<CommandResult> => {
 	const trimmed = text.trim()
 
@@ -48,6 +50,9 @@ const parseCommand = async (
 		}
 		// Set active CLI directly instead of pending switch
 		sessionStore.setActiveCli(chatId, cli)
+		if (persistentStore) {
+			await persistentStore.setActiveCli(chatId, cli)
+		}
 		return { handled: true, response: `Switched to ${cli}.` }
 	}
 
@@ -152,13 +157,23 @@ const sendToGateway = async (
 
 	const httpUrl = baseUrl.replace(/^ws/, 'http').replace('/events', '')
 	try {
-		await fetch(`${httpUrl}/send`, {
+		const response = await fetch(`${httpUrl}/send`, {
 			method: 'POST',
 			headers,
 			body: JSON.stringify({ chatId, text }),
 		})
+		if (!response.ok) {
+			const body = await response.text().catch(() => '')
+			void logToFile('error', 'bridge send non-200', {
+				status: response.status,
+				chatId,
+				body: body.slice(0, 1000),
+			})
+		}
 	} catch (err) {
 		console.error(`[jsonl-bridge] Failed to send message:`, err)
+		const message = err instanceof Error ? err.message : 'unknown error'
+		void logToFile('error', 'bridge send failed', { error: message, chatId })
 	}
 }
 
@@ -209,8 +224,11 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	}
 
 	const sessionStore = createSessionStore()
+	const persistentStore = await createPersistentSessionStore()
 	const cronService = new CronService()
 	await cronService.start()
+	
+	console.log(`[jsonl-bridge] Loaded ${persistentStore.resumeTokens.size} resume tokens`)
 
 	const wsUrl = config.gatewayUrl.replace(/^http/, 'ws')
 	const wsEndpoint = wsUrl.endsWith('/events') ? wsUrl : `${wsUrl}/events`
@@ -232,24 +250,38 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	let primaryChatId: number | string | null = null
 
 	const handleMessage = async (message: IncomingMessage) => {
-		const { chatId, text } = message
-		if (!text) return
+		const { chatId, text, attachments } = message
+		if (!text && !attachments?.length) return
 		const t0 = Date.now()
+		
+		// Build prompt with image paths if present
+		let prompt = text || ''
+		if (attachments?.length) {
+			const imagePaths = attachments
+				.filter(a => a.localPath)
+				.map(a => a.localPath)
+			if (imagePaths.length) {
+				// Prepend image paths so the CLI can read them
+				const imageNote = imagePaths.map(p => `[Image: ${p}]`).join(' ')
+				prompt = prompt ? `${imageNote}\n\n${prompt}` : imageNote
+			}
+		}
 
 		// Remember the chat for cron delivery
 		if (!primaryChatId) {
 			primaryChatId = chatId
 		}
 
-		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Received from ${chatId}: "${text.slice(0, 50)}..."`)
+		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Received from ${chatId}: "${prompt.slice(0, 50)}..."`)
 
 		const cmdResult = await parseCommand(
-			text,
+			prompt,
 			chatId,
 			manifests,
 			config.defaultCli,
 			sessionStore,
-			cronService
+			cronService,
+			persistentStore
 		)
 		if (cmdResult.handled) {
 			console.log(`[jsonl-bridge] Command handled: ${text}`)
@@ -257,8 +289,11 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			return
 		}
 
-		// Use active CLI for this chat, or default
-		const cliName = sessionStore.getActiveCli(chatId) || config.defaultCli
+		// Use active CLI for this chat, or default (check persistent store first)
+		const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
+		
+		// Log user message
+		void persistentStore.logMessage(chatId, 'user', prompt, undefined, cliName)
 		const manifest = manifests.get(cliName)
 		if (!manifest) {
 			console.log(`[jsonl-bridge] CLI '${cliName}' not found`)
@@ -302,13 +337,14 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					}
 					break
 
-				case 'tool_start':
+				case 'tool_start': {
 					const status = formatToolName(evt.name)
 					if (status !== lastToolStatus) {
 						lastToolStatus = status
 						await send(chatId, status)
 					}
 					break
+				}
 
 				case 'tool_end':
 					if (evt.isError) {
@@ -320,7 +356,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					stopTypingLoop()
 					console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
+					// Persist resume token and log assistant response
+					void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 					if (evt.answer) {
+						void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
 						const chunks = splitMessage(evt.answer)
 						for (const chunk of chunks) {
 							await send(chatId, chunk)
@@ -345,7 +384,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		})
 
 		// Run with resume token if we have one
-		session.run(text, resumeToken)
+		session.run(prompt, resumeToken)
 	}
 
 	ws.on('message', (data) => {

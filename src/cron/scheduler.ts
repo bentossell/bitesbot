@@ -2,7 +2,7 @@ import type { CronSchedule } from './types.js'
 
 // Simple cron parser for common patterns
 // Supports: "* * * * *" (min hour dom mon dow)
-const parseCronExpr = (expr: string, now: Date, tz?: string): number | null => {
+const parseCronExpr = (expr: string, now: Date): number | null => {
 	const parts = expr.trim().split(/\s+/)
 	if (parts.length !== 5) return null
 
@@ -66,7 +66,7 @@ export const calculateNextRun = (schedule: CronSchedule, now: Date = new Date())
 			return now.getTime() + schedule.everyMs
 
 		case 'cron':
-			return parseCronExpr(schedule.expr, now, schedule.tz)
+			return parseCronExpr(schedule.expr, now)
 	}
 }
 

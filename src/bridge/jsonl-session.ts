@@ -189,7 +189,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		try {
 			const event = JSON.parse(line) as ClaudeEvent
 			this.translateEvent(event)
-		} catch (err) {
+		} catch {
 			console.log(`[jsonl-session] Non-JSON line: ${line.slice(0, 100)}`)
 		}
 	}
