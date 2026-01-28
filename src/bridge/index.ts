@@ -13,3 +13,15 @@ export {
 	type BridgeHandle,
 } from './jsonl-bridge.js'
 export { setWorkspaceDir } from './session-store.js'
+export {
+	subagentRegistry,
+	type SubagentRunRecord,
+	type SubagentStatus,
+} from './subagent-registry.js'
+export {
+	parseSpawnCommand,
+	parseSubagentsCommand,
+	formatSubagentList,
+	formatSubagentAnnouncement,
+	findSubagent,
+} from './subagent-commands.js'

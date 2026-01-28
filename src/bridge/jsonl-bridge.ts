@@ -11,6 +11,14 @@ import { createPersistentSessionStore, type PersistentSessionStore } from './ses
 import { syncSessionToMemory } from './memory-sync.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
 import { logToFile } from '../logging/file.js'
+import { subagentRegistry, type SubagentRunRecord } from './subagent-registry.js'
+import {
+	parseSpawnCommand,
+	parseSubagentsCommand,
+	formatSubagentList,
+	formatSubagentAnnouncement,
+	findSubagent,
+} from './subagent-commands.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -82,10 +90,15 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 
 	if (trimmed === '/stop') {
 		const session = sessionStore.get(chatId)
+		const stoppedSubagents = subagentRegistry.stopAll(chatId)
 		if (session) {
 			session.terminate()
 			sessionStore.delete(chatId)
-			return { handled: true, response: '🛑 Session stopped.' }
+			const subagentMsg = stoppedSubagents > 0 ? ` + ${stoppedSubagents} subagent(s)` : ''
+			return { handled: true, response: `🛑 Session stopped${subagentMsg}.` }
+		}
+		if (stoppedSubagents > 0) {
+			return { handled: true, response: `🛑 Stopped ${stoppedSubagents} subagent(s).` }
 		}
 		return { handled: true, response: 'No active session to stop.' }
 	}
@@ -129,6 +142,51 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		const newValue = trimmed === '/verbose off' ? false : trimmed === '/verbose on' ? true : !current.verbose
 		await persistentStore.setChatSettings(chatId, { verbose: newValue })
 		return { handled: true, response: `Verbose ${newValue ? 'enabled' : 'disabled'}. Tool ${newValue ? 'names and outputs will be shown' : 'details hidden'}.` }
+	}
+
+	// Subagent commands - /spawn handled async in bridge, return signal here
+	if (trimmed.startsWith('/spawn')) {
+		const parsed = parseSpawnCommand(trimmed)
+		if (!parsed) {
+			return { handled: true, response: 'Usage: /spawn "task"\n       /spawn --label "Name" "task"\n       /spawn --cli droid "task"' }
+		}
+		// Signal that this is a spawn command - actual spawning handled in bridge
+		return { handled: true, response: '__SPAWN__', async: true }
+	}
+
+	// /subagents command
+	if (trimmed.startsWith('/subagents')) {
+		const parsed = parseSubagentsCommand(trimmed)
+		if (!parsed) {
+			return { handled: true, response: 'Usage:\n/subagents\n/subagents list\n/subagents stop <id>\n/subagents stop all\n/subagents log <id>' }
+		}
+
+		switch (parsed.action) {
+			case 'list': {
+				const records = subagentRegistry.list(chatId)
+				return { handled: true, response: formatSubagentList(records) }
+			}
+			case 'stop-all': {
+				const count = subagentRegistry.stopAll(chatId)
+				return { handled: true, response: count > 0 ? `🛑 Stopped ${count} subagent(s).` : 'No active subagents.' }
+			}
+			case 'stop': {
+				const record = findSubagent(chatId, parsed.target)
+				if (!record) {
+					return { handled: true, response: `Subagent not found: ${parsed.target}` }
+				}
+				subagentRegistry.stop(record.runId)
+				return { handled: true, response: `🛑 Stopped: ${record.label || record.runId.slice(0, 8)}` }
+			}
+			case 'log': {
+				const record = findSubagent(chatId, parsed.target)
+				if (!record) {
+					return { handled: true, response: `Subagent not found: ${parsed.target}` }
+				}
+				const output = record.result || record.error || '(no output yet)'
+				return { handled: true, response: `📋 ${record.label || record.runId.slice(0, 8)}:\n\n${output}` }
+			}
+		}
 	}
 
 	// Cron commands
@@ -255,6 +313,95 @@ const formatToolName = (name: string): string => {
 	return `${icons[name] || '🔧'} ${name}`
 }
 
+type SpawnSubagentOptions = {
+	chatId: number | string
+	task: string
+	label?: string
+	cli?: string
+	manifests: Map<string, CLIManifest>
+	defaultCli: string
+	workingDirectory: string
+	send: (chatId: number | string, text: string) => Promise<void>
+}
+
+const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
+	const { chatId, task, label, manifests, defaultCli, workingDirectory, send } = opts
+	const cliName = opts.cli || defaultCli
+
+	// Check concurrency limit
+	if (!subagentRegistry.canSpawn(chatId)) {
+		await send(chatId, '⚠️ Too many subagents running. Stop some first with /subagents stop all')
+		return
+	}
+
+	const manifest = manifests.get(cliName)
+	if (!manifest) {
+		await send(chatId, `❌ CLI not found: ${cliName}`)
+		return
+	}
+
+	// Register the run
+	const record = subagentRegistry.spawn({
+		chatId,
+		task,
+		cli: cliName,
+		label,
+	})
+
+	const displayName = label || `Subagent #${record.runId.slice(0, 8)}`
+	await send(chatId, `🚀 Spawned: ${displayName}\n   CLI: ${cliName}\n   Task: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''}`)
+
+	console.log(`[jsonl-bridge] Spawning subagent ${record.runId} with ${cliName}: "${task.slice(0, 50)}..."`)
+
+	// Create a new session for the subagent (no resume - fresh context)
+	const session = new JsonlSession(`subagent-${record.runId}`, manifest, workingDirectory)
+
+	let lastText = ''
+
+	session.on('event', (evt: BridgeEvent) => {
+		switch (evt.type) {
+			case 'started':
+				subagentRegistry.markRunning(record.runId, evt.sessionId)
+				console.log(`[jsonl-bridge] Subagent ${record.runId} started: ${evt.sessionId}`)
+				break
+
+			case 'text':
+				if (evt.text) {
+					lastText = evt.text
+				}
+				break
+
+			case 'completed':
+				console.log(`[jsonl-bridge] Subagent ${record.runId} completed`)
+				subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
+				// Announce completion
+				void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
+				// Prune old runs
+				subagentRegistry.prune(chatId)
+				break
+
+			case 'error':
+				console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
+				subagentRegistry.markError(record.runId, evt.message)
+				void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
+				break
+		}
+	})
+
+	session.on('exit', (code) => {
+		console.log(`[jsonl-bridge] Subagent ${record.runId} exited with code ${code}`)
+		// If exited without completing, mark as error
+		const current = subagentRegistry.get(record.runId)
+		if (current && current.status === 'running') {
+			subagentRegistry.markError(record.runId, `Process exited with code ${code}`)
+			void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
+		}
+	})
+
+	// Run the subagent (no resume token - fresh session)
+	session.run(task)
+}
+
 export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> => {
 	const manifests = await loadAllManifests(config.adaptersDir)
 	if (manifests.size === 0) {
@@ -333,6 +480,23 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			persistentStore,
 		})
 		if (cmdResult.handled) {
+			// Handle /spawn command specially - spawn a subagent
+			if ('async' in cmdResult && cmdResult.response === '__SPAWN__') {
+				const spawnCmd = parseSpawnCommand(prompt)
+				if (spawnCmd) {
+					void spawnSubagent({
+						chatId,
+						task: spawnCmd.task,
+						label: spawnCmd.label,
+						cli: spawnCmd.cli,
+						manifests,
+						defaultCli: config.defaultCli,
+						workingDirectory: config.workingDirectory,
+						send,
+					})
+					return
+				}
+			}
 			console.log(`[jsonl-bridge] Command handled: ${text}`)
 			await send(chatId, cmdResult.response)
 			return
@@ -370,8 +534,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const session = new JsonlSession(chatId, manifest, config.workingDirectory)
 		sessionStore.set(session)
 
-		// Get chat settings for streaming/verbose
-		const chatSettings = persistentStore.getChatSettings(chatId)
+		// Get chat settings dynamically (allows mid-session changes via /stream and /verbose)
+		const getSettings = () => persistentStore.getChatSettings(chatId)
 		let lastToolStatus: string | null = null
 		let streamBuffer = ''
 		let streamTimer: ReturnType<typeof setTimeout> | null = null
@@ -411,8 +575,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					break
 
 				case 'text':
-					// Handle streaming text if enabled
-					if (chatSettings.streaming && evt.text) {
+					// Handle streaming text if enabled (check dynamically)
+					if (getSettings().streaming && evt.text) {
 						streamBuffer = evt.text
 						if (streamBuffer.length >= STREAM_MIN_CHARS) {
 							await flushStreamBuffer(true)
@@ -423,7 +587,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					break
 
 				case 'tool_start': {
-					if (chatSettings.verbose) {
+					if (getSettings().verbose) {
 						const status = formatToolName(evt.name)
 						if (status !== lastToolStatus) {
 							lastToolStatus = status
@@ -434,7 +598,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				}
 
 				case 'tool_end':
-					if (chatSettings.verbose) {
+					if (getSettings().verbose) {
 						if (evt.isError) {
 							await send(chatId, `❌ Tool failed`)
 						} else if (evt.preview) {
@@ -456,7 +620,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					if (evt.answer) {
 						void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
 						// If streaming was on, check if we already sent this content
-						if (chatSettings.streaming && streamedTexts.has(evt.answer.trim())) {
+						if (getSettings().streaming && streamedTexts.has(evt.answer.trim())) {
 							// Already sent via streaming
 						} else {
 							const chunks = splitMessage(evt.answer)
