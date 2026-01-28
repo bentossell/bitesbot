@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { CronJob, CronJobCreate, CronStore } from './types.js'
 import { loadCronStore, saveCronStore, generateId, findJob, updateJob, removeJob, addJob } from './store.js'
-import { calculateNextRun, isDue, formatSchedule } from './scheduler.js'
+import { calculateNextRun, isDue, formatSchedule, findMissedRuns } from './scheduler.js'
 
 const DEFAULT_MESSAGE = 'Check HEARTBEAT.md and run any scheduled tasks. If nothing needs attention, reply HEARTBEAT_OK.'
 const DEFAULT_CRON_PATH = join(homedir(), '.config', 'tg-gateway', 'cron.json')
@@ -42,16 +42,43 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		this.store = await loadCronStore(this.storePath)
 		console.log(`[cron] Loaded ${this.store.jobs.length} jobs`)
 
-		// Calculate next run for any jobs that don't have it set
+		const now = new Date()
+		const missedJobIds: string[] = []
+
+		// Check for missed runs and calculate next run for each job
 		for (const job of this.store.jobs) {
-			if (job.enabled && !job.nextRunAtMs) {
-				const nextRun = calculateNextRun(job.schedule)
+			if (!job.enabled) continue
+
+			// Check if any runs were missed since last run
+			const missedRuns = findMissedRuns(job.schedule, job.lastRunAtMs, now)
+			if (missedRuns.length > 0) {
+				console.log(`[cron] Job "${job.name}" missed ${missedRuns.length} run(s) - will run now`)
+				// Update lastRunAtMs to the most recent missed time so we don't re-trigger
+				this.store = updateJob(this.store, job.id, { lastRunAtMs: missedRuns[missedRuns.length - 1] })
+				missedJobIds.push(job.id)
+			}
+
+			// Calculate next run if not set
+			if (!job.nextRunAtMs) {
+				const nextRun = calculateNextRun(job.schedule, now)
 				if (nextRun) {
 					this.store = updateJob(this.store, job.id, { nextRunAtMs: nextRun })
 				}
 			}
 		}
 		await this.save()
+
+		// Emit events for missed jobs (run them now)
+		for (const jobId of missedJobIds) {
+			const job = findJob(this.store, jobId)
+			if (!job) continue
+			if (job.wakeMode === 'next-heartbeat') {
+				this.pendingHeartbeat.push(job)
+			} else {
+				this.emit('event', { type: 'job:due', job })
+			}
+			this.scheduleNextRun(job)
+		}
 
 		this.timer = setInterval(() => this.check(), this.checkIntervalMs)
 		console.log(`[cron] Started, checking every ${this.checkIntervalMs / 1000}s`)
