@@ -19,6 +19,11 @@ export type IncomingMessage = {
 	raw: unknown
 }
 
+export type InlineButton = {
+	text: string
+	callbackData: string
+}
+
 export type OutboundMessage = {
 	chatId: number | string
 	text?: string
@@ -26,15 +31,25 @@ export type OutboundMessage = {
 	documentUrl?: string
 	caption?: string
 	replyToMessageId?: number
+	inlineButtons?: InlineButton[][]
 }
 
 export type TypingRequest = {
 	chatId: number | string
 }
 
+export type CallbackQuery = {
+	id: string
+	chatId: number | string
+	messageId: number
+	data: string
+	userId: number | string
+}
+
 export type GatewayEvent =
 	| { type: 'message.received'; payload: IncomingMessage }
 	| { type: 'message.sent'; payload: { chatId: number | string; messageId?: number } }
+	| { type: 'callback.query'; payload: CallbackQuery }
 	| { type: 'error'; payload: { message: string; detail?: string } }
 
 export type SendResponse = {

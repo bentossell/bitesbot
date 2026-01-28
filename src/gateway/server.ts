@@ -76,12 +76,26 @@ const downloadTelegramFile = async (bot: Bot, fileId: string, type: 'photo' | 'd
 
 const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 	const chatId = payload.chatId
+
+	// Build inline keyboard if provided
+	const reply_markup = payload.inlineButtons
+		? {
+			inline_keyboard: payload.inlineButtons.map((row) =>
+				row.map((btn) => ({
+					text: btn.text,
+					callback_data: btn.callbackData,
+				}))
+			),
+		}
+		: undefined
+
 	if (payload.photoUrl) {
 		const caption = payload.caption ?? payload.text
 		return bot.api.sendPhoto(chatId, payload.photoUrl, {
 			caption: caption ? toTelegramMarkdown(caption) : undefined,
 			reply_to_message_id: payload.replyToMessageId,
 			parse_mode: 'MarkdownV2',
+			reply_markup,
 		})
 	}
 
@@ -91,6 +105,7 @@ const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 			caption: caption ? toTelegramMarkdown(caption) : undefined,
 			reply_to_message_id: payload.replyToMessageId,
 			parse_mode: 'MarkdownV2',
+			reply_markup,
 		})
 	}
 
@@ -101,6 +116,7 @@ const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 	return bot.api.sendMessage(chatId, toTelegramMarkdown(payload.text), {
 		reply_to_message_id: payload.replyToMessageId,
 		parse_mode: 'MarkdownV2',
+		reply_markup,
 	})
 }
 
@@ -121,6 +137,7 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			{ command: 'use', description: 'Switch CLI (claude/droid)' },
 			{ command: 'stream', description: 'Toggle streaming output' },
 			{ command: 'verbose', description: 'Toggle tool output' },
+			{ command: 'spec', description: 'Create plan for approval' },
 			{ command: 'cron', description: 'Manage scheduled jobs' },
 		])
 	} catch {
@@ -227,6 +244,37 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 
 		wss.handleUpgrade(req, socket, head, (ws) => {
 			wss.emit('connection', ws, req)
+		})
+	})
+
+	bot.on('callback_query', async (ctx) => {
+		const callback = ctx.callbackQuery
+		if (!callback || !callback.message) return
+
+		const chatId = callback.message.chat.id
+		const messageId = callback.message.message_id
+
+		// Filter by allowed chat IDs if configured
+		if (config.allowedChatIds && config.allowedChatIds.length > 0) {
+			if (!config.allowedChatIds.includes(chatId)) {
+				void logToFile('info', 'callback ignored from unauthorized chat', { chatId })
+				return
+			}
+		}
+
+		// Answer callback query immediately
+		await bot.api.answerCallbackQuery(callback.id).catch(() => {})
+
+		// Broadcast callback query event
+		broadcast({
+			type: 'callback.query',
+			payload: {
+				id: callback.id,
+				chatId,
+				messageId,
+				data: callback.data || '',
+				userId: callback.from.id,
+			},
 		})
 	})
 
