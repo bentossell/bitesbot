@@ -136,8 +136,9 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		}
 		const modelId = modelAliases[arg] || arg
 		// Store model preference (will be passed to CLI on next session)
+		// Note: setChatSettings merges with existing settings, so this won't clobber streaming/verbose
 		if (persistentStore) {
-			await persistentStore.setChatSettings(chatId, { model: modelId } as Record<string, unknown>)
+			await persistentStore.setChatSettings(chatId, { model: modelId })
 		}
 		return { handled: true, response: `Model set to: ${modelId}\nWill apply to next message (start /new session for fresh context).` }
 	}
@@ -187,8 +188,8 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		sessionStore.delete(chatId)
 		const queueLen = sessionStore.getQueueLength(chatId)
 		const queueMsg = queueLen > 0 ? ` Processing next queued message (${queueLen} pending).` : ''
-		// Signal async handling to flush queue
-		return { handled: true, response: `⏭️ Task interrupted.${queueMsg}`, async: true }
+		// Signal async handling to flush queue using structured flag
+		return { handled: true, response: `__INTERRUPT__:⏭️ Task interrupted.${queueMsg}`, async: true }
 	}
 
 	if (trimmed === '/status') {
@@ -1467,9 +1468,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			}
 			
 			// Handle /interrupt or /skip - send response then flush queue
-			if ('async' in cmdResult && cmdResult.response.startsWith('⏭️ Task interrupted')) {
+			if ('async' in cmdResult && cmdResult.response.startsWith('__INTERRUPT__:')) {
+				const userMessage = cmdResult.response.slice('__INTERRUPT__:'.length)
 				console.log(`[jsonl-bridge] Task interrupted: ${text}`)
-				await send(chatId, cmdResult.response)
+				await send(chatId, userMessage)
 				// Flush the queue to process next message
 				void flushQueue(chatId)
 				return
