@@ -338,7 +338,18 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 
 	terminate(): void {
 		if (this.process) {
-			this.process.kill('SIGTERM')
+			const proc = this.process
+			// Try SIGTERM first, then force kill after 500ms if still running
+			proc.kill('SIGTERM')
+			const killTimer = setTimeout(() => {
+				try {
+					proc.kill('SIGKILL')
+				} catch {
+					// Already dead
+				}
+			}, 500)
+			// Cancel the SIGKILL timer if process exits cleanly
+			proc.once('exit', () => clearTimeout(killTimer))
 			this.process = null
 		}
 		this.readline = null
