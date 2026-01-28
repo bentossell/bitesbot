@@ -43,6 +43,7 @@ export type BridgeEvent =
 	| { type: 'text'; text: string }
 	| { type: 'completed'; sessionId: string; answer: string; isError: boolean; cost?: number }
 	| { type: 'error'; message: string }
+	| { type: 'spec_plan'; plan: string } // Emitted when agent exits spec mode with a plan
 
 export type SessionInfo = {
 	id: string
@@ -104,7 +105,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		}
 	}
 
-	run(prompt: string, resume?: ResumeToken): void {
+	run(prompt: string, resume?: ResumeToken, options?: { specMode?: boolean }): void {
 		if (this.process) {
 			console.log(`[jsonl-session] Process already running for ${this.chatId}`)
 			return
@@ -125,6 +126,11 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			if (resume?.sessionId) {
 				args.push('-s', resume.sessionId)
 			}
+			// Add spec mode flag if enabled and configured
+			if (options?.specMode && this.manifest.specMode?.flag) {
+				const flagParts = this.manifest.specMode.flag.split(' ')
+				args.push(...flagParts)
+			}
 			args.push(prompt)
 		} else {
 			// Claude uses: claude -p --output-format stream-json --verbose "prompt"
@@ -136,6 +142,11 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			]
 			if (resume?.sessionId) {
 				args.push('--resume', resume.sessionId)
+			}
+			// Add spec mode flag if enabled and configured
+			if (options?.specMode && this.manifest.specMode?.flag) {
+				const flagParts = this.manifest.specMode.flag.split(' ')
+				args.push(...flagParts)
 			}
 			args.push(prompt)
 		}
@@ -222,6 +233,13 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 									name: block.name,
 									input: block.input,
 								})
+								// Detect ExitSpecMode tool (used by Droid and Claude in spec mode)
+								if (block.name === 'ExitSpecMode' && block.input) {
+									const plan = (block.input as { plan?: string }).plan
+									if (plan) {
+										this.emit('event', { type: 'spec_plan', plan })
+									}
+								}
 								break
 							case 'thinking':
 								this.emit('event', { type: 'thinking', text: block.thinking })
@@ -268,6 +286,13 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 						name: event.tool,
 						input: event.input,
 					})
+					// Detect ExitSpecMode tool (used by Droid in spec mode)
+					if (event.tool === 'ExitSpecMode' && event.input) {
+						const plan = (event.input as { plan?: string }).plan
+						if (plan) {
+							this.emit('event', { type: 'spec_plan', plan })
+						}
+					}
 				}
 				break
 
