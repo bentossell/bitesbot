@@ -1,6 +1,7 @@
 name: droid
 command: ~/.local/bin/droid
-args: []
+args:
+  - --skip-permissions-unsafe
 inputMode: jsonl
 
 resume:
