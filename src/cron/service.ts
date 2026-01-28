@@ -43,7 +43,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		console.log(`[cron] Loaded ${this.store.jobs.length} jobs`)
 
 		const now = new Date()
-		const missedJobs: CronJob[] = []
+		const missedJobIds: string[] = []
 
 		// Check for missed runs and calculate next run for each job
 		for (const job of this.store.jobs) {
@@ -53,9 +53,9 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 			const missedRuns = findMissedRuns(job.schedule, job.lastRunAtMs, now)
 			if (missedRuns.length > 0) {
 				console.log(`[cron] Job "${job.name}" missed ${missedRuns.length} run(s) - will run now`)
-				missedJobs.push(job)
 				// Update lastRunAtMs to the most recent missed time so we don't re-trigger
 				this.store = updateJob(this.store, job.id, { lastRunAtMs: missedRuns[missedRuns.length - 1] })
+				missedJobIds.push(job.id)
 			}
 
 			// Calculate next run if not set
@@ -69,7 +69,9 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		await this.save()
 
 		// Emit events for missed jobs (run them now)
-		for (const job of missedJobs) {
+		for (const jobId of missedJobIds) {
+			const job = findJob(this.store, jobId)
+			if (!job) continue
 			if (job.wakeMode === 'next-heartbeat') {
 				this.pendingHeartbeat.push(job)
 			} else {

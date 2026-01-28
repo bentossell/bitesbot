@@ -19,6 +19,7 @@ const parseCronExpr = (expr: string, now: Date): number | null => {
 		if (expr.includes('/')) {
 			const [, step] = expr.split('/')
 			const stepNum = parseInt(step, 10)
+			if (!Number.isFinite(stepNum) || stepNum <= 0) return false
 			return value % stepNum === 0
 		}
 		if (expr.includes('-')) {
