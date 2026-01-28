@@ -14,7 +14,9 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "tsc -p tsconfig.json",
+		"build": "tsc -p tsconfig.json && npm run build:web",
+		"build:web": "tsc -p tsconfig.web.json && npm run copy:web-assets",
+		"copy:web-assets": "cp src/web/index.html dist/web/ && cp -r src/web/styles dist/web/",
 		"dev": "tsx watch src/daemon/cli.ts start",
 		"dev:once": "tsx src/daemon/cli.ts start",
 		"gateway": "node dist/daemon/cli.js start",
