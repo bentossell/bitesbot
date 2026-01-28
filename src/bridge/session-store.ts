@@ -14,10 +14,16 @@ export const setWorkspaceDir = (workspaceDir: string) => {
 	RESUME_TOKENS_PATH = join(workspaceDir, '.state', 'resume-tokens.json')
 }
 
+export type ChatSettings = {
+	streaming: boolean
+	verbose: boolean
+}
+
 type ResumeTokenStore = {
 	version: 1
 	tokens: Record<string, ResumeToken> // key: `${chatId}:${cli}`
 	activeCli: Record<string, string> // key: chatId
+	chatSettings: Record<string, ChatSettings> // key: chatId
 }
 
 type SessionLogEntry = {
@@ -29,7 +35,8 @@ type SessionLogEntry = {
 	cli?: string
 }
 
-const DEFAULT_STORE: ResumeTokenStore = { version: 1, tokens: {}, activeCli: {} }
+const DEFAULT_STORE: ResumeTokenStore = { version: 1, tokens: {}, activeCli: {}, chatSettings: {} }
+const DEFAULT_CHAT_SETTINGS: ChatSettings = { streaming: false, verbose: false }
 
 export const loadResumeTokens = async (): Promise<ResumeTokenStore> => {
 	try {
@@ -56,11 +63,14 @@ export const logSessionMessage = async (entry: SessionLogEntry): Promise<void> =
 export type PersistentSessionStore = {
 	resumeTokens: Map<string, ResumeToken>
 	activeCli: Map<string, string>
+	chatSettings: Map<string, ChatSettings>
 	
 	getResumeToken: (chatId: number | string, cli: string) => ResumeToken | undefined
 	setResumeToken: (chatId: number | string, cli: string, token: ResumeToken) => Promise<void>
 	getActiveCli: (chatId: number | string) => string | undefined
 	setActiveCli: (chatId: number | string, cli: string) => Promise<void>
+	getChatSettings: (chatId: number | string) => ChatSettings
+	setChatSettings: (chatId: number | string, settings: Partial<ChatSettings>) => Promise<void>
 	logMessage: (chatId: number | string, role: 'user' | 'assistant', text: string, sessionId?: string, cli?: string) => Promise<void>
 }
 
@@ -68,12 +78,16 @@ export const createPersistentSessionStore = async (): Promise<PersistentSessionS
 	const stored = await loadResumeTokens()
 	const resumeTokens = new Map(Object.entries(stored.tokens))
 	const activeCli = new Map(Object.entries(stored.activeCli))
+	const chatSettings = new Map<string, ChatSettings>(
+		Object.entries(stored.chatSettings ?? {})
+	)
 
 	const persist = async () => {
 		const store: ResumeTokenStore = {
 			version: 1,
 			tokens: Object.fromEntries(resumeTokens),
 			activeCli: Object.fromEntries(activeCli),
+			chatSettings: Object.fromEntries(chatSettings),
 		}
 		await saveResumeTokens(store)
 	}
@@ -81,6 +95,7 @@ export const createPersistentSessionStore = async (): Promise<PersistentSessionS
 	return {
 		resumeTokens,
 		activeCli,
+		chatSettings,
 		
 		getResumeToken: (chatId, cli) => resumeTokens.get(`${chatId}:${cli}`),
 		
@@ -93,6 +108,18 @@ export const createPersistentSessionStore = async (): Promise<PersistentSessionS
 		
 		setActiveCli: async (chatId, cli) => {
 			activeCli.set(String(chatId), cli)
+			await persist()
+		},
+		
+		getChatSettings: (chatId) => {
+			const key = String(chatId)
+			return chatSettings.get(key) ?? { ...DEFAULT_CHAT_SETTINGS }
+		},
+		
+		setChatSettings: async (chatId, settings) => {
+			const key = String(chatId)
+			const current = chatSettings.get(key) ?? { ...DEFAULT_CHAT_SETTINGS }
+			chatSettings.set(key, { ...current, ...settings })
 			await persist()
 		},
 		

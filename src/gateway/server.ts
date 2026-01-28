@@ -115,10 +115,13 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 		botInfo = await bot.api.getMe()
 		// Register slash commands menu
 		await bot.api.setMyCommands([
-			{ command: 'new', description: 'Start a new session' },
+			{ command: 'new', description: 'Start fresh session' },
 			{ command: 'stop', description: 'Stop current session' },
-			{ command: 'status', description: 'Show current session status' },
-			{ command: 'use', description: 'Switch CLI (e.g. /use claude)' },
+			{ command: 'status', description: 'Show session status' },
+			{ command: 'use', description: 'Switch CLI (claude/droid)' },
+			{ command: 'stream', description: 'Toggle streaming output' },
+			{ command: 'verbose', description: 'Toggle tool output' },
+			{ command: 'cron', description: 'Manage scheduled jobs' },
 		])
 	} catch {
 		botInfo = undefined

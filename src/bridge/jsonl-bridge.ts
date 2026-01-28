@@ -7,7 +7,7 @@ import {
 	type SessionStore,
 	type BridgeEvent,
 } from './jsonl-session.js'
-import { createPersistentSessionStore, setWorkspaceDir, type PersistentSessionStore } from './session-store.js'
+import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
 import { syncSessionToMemory } from './memory-sync.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
 import { logToFile } from '../logging/file.js'
@@ -94,18 +94,41 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		const session = sessionStore.get(chatId)
 		const currentCli = sessionStore.getActiveCli(chatId) || session?.cli || defaultCli
 		const resumeToken = sessionStore.getResumeToken(chatId, currentCli)
+		const settings = persistentStore?.getChatSettings(chatId) ?? { streaming: false, verbose: false }
 		if (!session && !resumeToken) {
-			return { handled: true, response: `No active session. CLI: ${currentCli}` }
+			return { handled: true, response: `No active session. CLI: ${currentCli}\nStreaming: ${settings.streaming ? 'on' : 'off'}\nVerbose: ${settings.verbose ? 'on' : 'off'}` }
 		}
 		const info = session?.getInfo()
 		const lines = [
 			`CLI: ${currentCli}`,
 			`State: ${info?.state || 'ready'}`,
+			`Streaming: ${settings.streaming ? 'on' : 'off'}`,
+			`Verbose: ${settings.verbose ? 'on' : 'off'}`,
 		]
 		if (resumeToken) {
 			lines.push(`Resume: ${resumeToken.sessionId.slice(0, 8)}...`)
 		}
 		return { handled: true, response: lines.join('\n') }
+	}
+
+	if (trimmed === '/stream' || trimmed === '/stream on' || trimmed === '/stream off') {
+		if (!persistentStore) {
+			return { handled: true, response: 'Settings not available.' }
+		}
+		const current = persistentStore.getChatSettings(chatId)
+		const newValue = trimmed === '/stream off' ? false : trimmed === '/stream on' ? true : !current.streaming
+		await persistentStore.setChatSettings(chatId, { streaming: newValue })
+		return { handled: true, response: `Streaming ${newValue ? 'enabled' : 'disabled'}. Text will be sent ${newValue ? 'as it arrives' : 'when complete'}.` }
+	}
+
+	if (trimmed === '/verbose' || trimmed === '/verbose on' || trimmed === '/verbose off') {
+		if (!persistentStore) {
+			return { handled: true, response: 'Settings not available.' }
+		}
+		const current = persistentStore.getChatSettings(chatId)
+		const newValue = trimmed === '/verbose off' ? false : trimmed === '/verbose on' ? true : !current.verbose
+		await persistentStore.setChatSettings(chatId, { verbose: newValue })
+		return { handled: true, response: `Verbose ${newValue ? 'enabled' : 'disabled'}. Tool ${newValue ? 'names and outputs will be shown' : 'details hidden'}.` }
 	}
 
 	// Cron commands
@@ -347,7 +370,34 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const session = new JsonlSession(chatId, manifest, config.workingDirectory)
 		sessionStore.set(session)
 
+		// Get chat settings for streaming/verbose
+		const chatSettings = persistentStore.getChatSettings(chatId)
 		let lastToolStatus: string | null = null
+		let streamBuffer = ''
+		let streamTimer: ReturnType<typeof setTimeout> | null = null
+		const streamedTexts = new Set<string>()
+		const STREAM_MIN_CHARS = 800
+		const STREAM_IDLE_MS = 1500
+
+		const flushStreamBuffer = async (force = false) => {
+			if (streamTimer) {
+				clearTimeout(streamTimer)
+				streamTimer = null
+			}
+			if (!streamBuffer || (!force && streamBuffer.length < STREAM_MIN_CHARS)) return
+			
+			const toSend = streamBuffer.trim()
+			streamBuffer = ''
+			if (toSend && !streamedTexts.has(toSend)) {
+				streamedTexts.add(toSend)
+				await send(chatId, toSend)
+			}
+		}
+
+		const scheduleStreamFlush = () => {
+			if (streamTimer) clearTimeout(streamTimer)
+			streamTimer = setTimeout(() => void flushStreamBuffer(true), STREAM_IDLE_MS)
+		}
 
 		session.on('event', async (evt: BridgeEvent) => {
 			switch (evt.type) {
@@ -357,38 +407,64 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					break
 
 				case 'thinking':
-					if (evt.text) {
-						const preview = evt.text.length > 100 ? evt.text.slice(0, 100) + '...' : evt.text
-						await send(chatId, `💭 ${preview}`)
+					// Thinking is not sent to user
+					break
+
+				case 'text':
+					// Handle streaming text if enabled
+					if (chatSettings.streaming && evt.text) {
+						streamBuffer = evt.text
+						if (streamBuffer.length >= STREAM_MIN_CHARS) {
+							await flushStreamBuffer(true)
+						} else {
+							scheduleStreamFlush()
+						}
 					}
 					break
 
 				case 'tool_start': {
-					const status = formatToolName(evt.name)
-					if (status !== lastToolStatus) {
-						lastToolStatus = status
-						await send(chatId, status)
+					if (chatSettings.verbose) {
+						const status = formatToolName(evt.name)
+						if (status !== lastToolStatus) {
+							lastToolStatus = status
+							await send(chatId, status)
+						}
 					}
 					break
 				}
 
 				case 'tool_end':
-					if (evt.isError) {
-						await send(chatId, `❌ Tool failed`)
+					if (chatSettings.verbose) {
+						if (evt.isError) {
+							await send(chatId, `❌ Tool failed`)
+						} else if (evt.preview) {
+							const preview = evt.preview.length > 200 ? evt.preview.slice(0, 200) + '...' : evt.preview
+							await send(chatId, `📤 ${preview}`)
+						}
 					}
 					break
 
 				case 'completed':
 					stopTypingLoop()
+					if (streamTimer) {
+						clearTimeout(streamTimer)
+						streamTimer = null
+					}
 					console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
-					// Persist resume token and log assistant response
 					void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 					if (evt.answer) {
 						void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
-						const chunks = splitMessage(evt.answer)
-						for (const chunk of chunks) {
-							await send(chatId, chunk)
+						// If streaming was on, check if we already sent this content
+						if (chatSettings.streaming && streamedTexts.has(evt.answer.trim())) {
+							// Already sent via streaming
+						} else {
+							const chunks = splitMessage(evt.answer)
+							for (const chunk of chunks) {
+								if (!streamedTexts.has(chunk.trim())) {
+									await send(chatId, chunk)
+								}
+							}
 						}
 					}
 					if (evt.cost) {
@@ -398,6 +474,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 				case 'error':
 					stopTypingLoop()
+					if (streamTimer) {
+						clearTimeout(streamTimer)
+						streamTimer = null
+					}
 					await send(chatId, `❌ ${evt.message}`)
 					break
 			}
