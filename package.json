@@ -21,7 +21,7 @@
 		"typecheck": "tsc -p tsconfig.test.json --noEmit",
 		"test": "vitest run",
 		"test:unit": "vitest run --exclude '**/*.e2e.ts'",
-		"test:e2e": "vitest run --include 'tests/*.e2e.ts'",
+		"test:e2e": "vitest run --config vitest.e2e.config.ts",
 		"test:integration": "vitest run --grep 'integration|e2e'",
 		"precommit": "npm run typecheck && npm run lint && npm run test:unit",
 		"prepare": "husky"
