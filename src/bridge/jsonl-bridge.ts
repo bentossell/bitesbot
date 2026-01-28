@@ -115,6 +115,34 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: `Switched to ${cli}.` }
 	}
 
+	// /model command - switch AI model (with aliases)
+	if (trimmed.startsWith('/model')) {
+		const arg = trimmed.slice(6).trim().toLowerCase()
+		if (!arg) {
+			return { handled: true, response: 'Usage: /model <alias>\nAliases: opus, sonnet, haiku, codex\nFull IDs also supported (e.g., claude-opus-4-5-20251101)' }
+		}
+		// Model alias mappings (based on CLI docs)
+		const modelAliases: Record<string, string> = {
+			// Claude models
+			opus: 'claude-opus-4-5-20251101',
+			sonnet: 'claude-sonnet-4-5-20250929',
+			haiku: 'claude-haiku-4-5-20251001',
+			// OpenAI Codex models
+			codex: 'gpt-5.2',
+			'codex-max': 'gpt-5.1-codex-max',
+			// Gemini
+			gemini: 'gemini-3-pro-preview',
+			'gemini-flash': 'gemini-3-flash-preview',
+		}
+		const modelId = modelAliases[arg] || arg
+		// Store model preference (will be passed to CLI on next session)
+		// Note: setChatSettings merges with existing settings, so this won't clobber streaming/verbose
+		if (persistentStore) {
+			await persistentStore.setChatSettings(chatId, { model: modelId })
+		}
+		return { handled: true, response: `Model set to: ${modelId}\nWill apply to next message (start /new session for fresh context).` }
+	}
+
 	if (trimmed === '/new') {
 		// Sync session to memory before clearing
 		try {
@@ -149,20 +177,34 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: 'No active session to stop.' }
 	}
 
+	// /interrupt or /skip - stop current agent turn but keep queue and session
+	if (trimmed === '/interrupt' || trimmed === '/skip') {
+		const session = sessionStore.get(chatId)
+		if (!session) {
+			return { handled: true, response: 'No active task to interrupt.' }
+		}
+		// Terminate the current session but keep the queue
+		session.terminate()
+		sessionStore.delete(chatId)
+		const queueLen = sessionStore.getQueueLength(chatId)
+		const queueMsg = queueLen > 0 ? ` Processing next queued message (${queueLen} pending).` : ''
+		// Signal async handling to flush queue using structured flag
+		return { handled: true, response: `__INTERRUPT__:⏭️ Task interrupted.${queueMsg}`, async: true }
+	}
+
 	if (trimmed === '/status') {
 		const session = sessionStore.get(chatId)
 		const currentCli = sessionStore.getActiveCli(chatId) || session?.cli || defaultCli
 		const resumeToken = sessionStore.getResumeToken(chatId, currentCli)
 		const settings = persistentStore?.getChatSettings(chatId) ?? { streaming: false, verbose: false }
 		if (!session && !resumeToken) {
-			return { handled: true, response: `No active session. CLI: ${currentCli}\nStreaming: ${settings.streaming ? 'on' : 'off'}\nVerbose: ${settings.verbose ? 'on' : 'off'}` }
+			return { handled: true, response: `No active session. CLI: ${currentCli}\nStreaming: ${settings.streaming ? 'on' : 'off'}` }
 		}
 		const info = session?.getInfo()
 		const lines = [
 			`CLI: ${currentCli}`,
 			`State: ${info?.state || 'ready'}`,
 			`Streaming: ${settings.streaming ? 'on' : 'off'}`,
-			`Verbose: ${settings.verbose ? 'on' : 'off'}`,
 		]
 		if (resumeToken) {
 			lines.push(`Resume: ${resumeToken.sessionId.slice(0, 8)}...`)
@@ -180,6 +222,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: `Streaming ${newValue ? 'enabled' : 'disabled'}. Text will be sent ${newValue ? 'as it arrives' : 'when complete'}.` }
 	}
 
+	// Hidden feature: /verbose - shows tool names and outputs (off by default)
 	if (trimmed === '/verbose' || trimmed === '/verbose on' || trimmed === '/verbose off') {
 		if (!persistentStore) {
 			return { handled: true, response: 'Settings not available.' }
@@ -1302,11 +1345,30 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	}
 
 	const handleMessage = async (message: IncomingMessage) => {
-		const { chatId, text, attachments } = message
+		const { chatId, text, attachments, forward } = message
 		if (!text && !attachments?.length) return
 
 		// Build prompt with image paths if present
 		let prompt = text || ''
+		
+		// Handle forwarded messages - prepend context about the original sender
+		if (forward) {
+			let forwardContext = '[Forwarded message'
+			if (forward.fromUser) {
+				const name = [forward.fromUser.firstName, forward.fromUser.lastName].filter(Boolean).join(' ')
+				forwardContext += ` from ${name || 'unknown user'}`
+				if (forward.fromUser.username) {
+					forwardContext += ` (@${forward.fromUser.username})`
+				}
+			} else if (forward.fromChat) {
+				forwardContext += ` from ${forward.fromChat.title || 'unknown chat'}`
+				if (forward.fromChat.type) {
+					forwardContext += ` (${forward.fromChat.type})`
+				}
+			}
+			forwardContext += ']'
+			prompt = `${forwardContext}\n${prompt}`
+		}
 		if (attachments?.length) {
 			const imagePaths = attachments
 				.filter(a => a.localPath)
@@ -1404,6 +1466,17 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					return
 				}
 			}
+			
+			// Handle /interrupt or /skip - send response then flush queue
+			if ('async' in cmdResult && cmdResult.response.startsWith('__INTERRUPT__:')) {
+				const userMessage = cmdResult.response.slice('__INTERRUPT__:'.length)
+				console.log(`[jsonl-bridge] Task interrupted: ${text}`)
+				await send(chatId, userMessage)
+				// Flush the queue to process next message
+				void flushQueue(chatId)
+				return
+			}
+			
 			console.log(`[jsonl-bridge] Command handled: ${text}`)
 			await send(chatId, cmdResult.response)
 			return

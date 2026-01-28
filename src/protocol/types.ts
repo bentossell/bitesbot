@@ -8,6 +8,12 @@ export type Attachment = {
 	localPath?: string // Populated after download
 }
 
+export type ForwardInfo = {
+	fromUser?: { id: number; firstName?: string; lastName?: string; username?: string }
+	fromChat?: { id: number; title?: string; type?: string }
+	date?: number
+}
+
 export type IncomingMessage = {
 	id: string
 	chatId: number | string
@@ -16,6 +22,7 @@ export type IncomingMessage = {
 	text?: string
 	attachments?: Attachment[]
 	timestamp: string
+	forward?: ForwardInfo // Present if message was forwarded
 	raw: unknown
 }
 

@@ -1,7 +1,7 @@
 import { loadConfig } from '../gateway/config.js'
 import { startGatewayServer } from '../gateway/server.js'
 import { startBridge, type BridgeHandle, setWorkspaceDir } from '../bridge/index.js'
-import { createMcpServer, type McpServerHandle } from '../mcp/index.js'
+import { createMcpServer } from '../mcp/index.js'
 import { removePidFile, writePidFile } from './pid.js'
 
 export type RunOptions = {
