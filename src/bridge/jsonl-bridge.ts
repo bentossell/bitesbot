@@ -345,10 +345,12 @@ type CreatePlanOptions = {
 	gatewayUrl: string
 	authToken?: string
 	send: (chatId: number | string, text: string) => Promise<void>
+	messageId?: number
+	userId?: number | string
 }
 
 const createPlanForApproval = async (opts: CreatePlanOptions): Promise<void> => {
-	const { chatId, task, cli, manifests, workingDirectory, gatewayUrl, authToken, send } = opts
+	const { chatId, task, cli, manifests, workingDirectory, gatewayUrl, authToken, send, messageId, userId } = opts
 
 	const manifest = manifests.get(cli)
 	if (!manifest) {
@@ -404,6 +406,8 @@ Provide ONLY the plan in the format above, no additional commentary.`
 					plan,
 					originalPrompt: task,
 					cli,
+					messageId,
+					userId,
 					createdAt: new Date().toISOString(),
 				})
 
@@ -704,6 +708,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					gatewayUrl: config.gatewayUrl,
 					authToken: config.authToken,
 					send,
+					messageId: message.messageId,
+					userId: message.userId,
 				})
 				return
 			}
