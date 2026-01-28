@@ -7,6 +7,7 @@ import {
 	createSessionStore,
 	type SessionStore,
 	type BridgeEvent,
+	type QueuedMessage,
 } from './jsonl-session.js'
 import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
 import { syncSessionToMemory } from './memory-sync.js'
@@ -659,82 +660,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	// Track the primary chat for cron job delivery
 	let primaryChatId: number | string | null = null
 
-	const handleMessage = async (message: IncomingMessage) => {
-		const { chatId, text, attachments } = message
-		if (!text && !attachments?.length) return
+	const processMessage = async (chatId: number | string, prompt: string, attachments?: IncomingMessage['attachments']) => {
 		const t0 = Date.now()
-		
-		// Build prompt with image paths if present
-		let prompt = text || ''
-		if (attachments?.length) {
-			const imagePaths = attachments
-				.filter(a => a.localPath)
-				.map(a => a.localPath)
-			if (imagePaths.length) {
-				// Prepend image paths so the CLI can read them
-				const imageNote = imagePaths.map(p => `[Image: ${p}]`).join(' ')
-				prompt = prompt ? `${imageNote}\n\n${prompt}` : imageNote
-			}
-		}
-
-		// Remember the chat for cron delivery
-		if (!primaryChatId) {
-			primaryChatId = chatId
-		}
-
-		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Received from ${chatId}: "${prompt.slice(0, 50)}..."`)
-
-		const cmdResult = await parseCommand({
-			text: prompt,
-			chatId,
-			manifests,
-			defaultCli: config.defaultCli,
-			sessionStore,
-			workingDirectory: config.workingDirectory,
-			cronService,
-			persistentStore,
-		})
-		if (cmdResult.handled) {
-			// Handle /spec command - create plan for approval
-			if ('async' in cmdResult && cmdResult.response === '__SPEC__') {
-				const task = prompt.slice(6).trim()
-				const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
-				void createPlanForApproval({
-					chatId,
-					task,
-					cli: cliName,
-					manifests,
-					workingDirectory: config.workingDirectory,
-					gatewayUrl: config.gatewayUrl,
-					authToken: config.authToken,
-					send,
-					messageId: message.messageId,
-					userId: message.userId,
-				})
-				return
-			}
-
-			// Handle /spawn command specially - spawn a subagent
-			if ('async' in cmdResult && cmdResult.response === '__SPAWN__') {
-				const spawnCmd = parseSpawnCommand(prompt)
-				if (spawnCmd) {
-					void spawnSubagent({
-						chatId,
-						task: spawnCmd.task,
-						label: spawnCmd.label,
-						cli: spawnCmd.cli,
-						manifests,
-						defaultCli: config.defaultCli,
-						workingDirectory: config.workingDirectory,
-						send,
-					})
-					return
-				}
-			}
-			console.log(`[jsonl-bridge] Command handled: ${text}`)
-			await send(chatId, cmdResult.response)
-			return
-		}
 
 		// Use active CLI for this chat, or default (check persistent store first)
 		const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
@@ -892,10 +819,116 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			stopTypingLoop()
 			console.log(`[jsonl-bridge] Session exited with code ${code}`)
 			sessionStore.delete(chatId)
+			// Flush queue after session ends
+			void flushQueue(chatId)
 		})
 
 		// Run with resume token if we have one
 		session.run(prompt, resumeToken)
+	}
+
+	const flushQueue = async (chatId: number | string) => {
+		const next = sessionStore.dequeue(chatId)
+		if (!next) return
+		console.log(`[jsonl-bridge] Flushing queued message for ${chatId}`)
+		await processMessage(chatId, next.text, next.attachments as IncomingMessage['attachments'])
+	}
+
+	const handleMessage = async (message: IncomingMessage) => {
+		const { chatId, text, attachments } = message
+		if (!text && !attachments?.length) return
+
+		// Build prompt with image paths if present
+		let prompt = text || ''
+		if (attachments?.length) {
+			const imagePaths = attachments
+				.filter(a => a.localPath)
+				.map(a => a.localPath)
+			if (imagePaths.length) {
+				const imageNote = imagePaths.map(p => `[Image: ${p}]`).join(' ')
+				prompt = prompt ? `${imageNote}\n\n${prompt}` : imageNote
+			}
+		}
+
+		// Remember the chat for cron delivery
+		if (!primaryChatId) {
+			primaryChatId = chatId
+		}
+
+		console.log(`[jsonl-bridge] Received from ${chatId}: "${prompt.slice(0, 50)}..."`)
+
+		// Handle commands (always process immediately)
+		const cmdResult = await parseCommand({
+			text: prompt,
+			chatId,
+			manifests,
+			defaultCli: config.defaultCli,
+			sessionStore,
+			workingDirectory: config.workingDirectory,
+			cronService,
+			persistentStore,
+		})
+		if (cmdResult.handled) {
+			// Handle /spec command - create plan for approval
+			if ('async' in cmdResult && cmdResult.response === '__SPEC__') {
+				const task = prompt.slice(6).trim()
+				const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
+				void createPlanForApproval({
+					chatId,
+					task,
+					cli: cliName,
+					manifests,
+					workingDirectory: config.workingDirectory,
+					gatewayUrl: config.gatewayUrl,
+					authToken: config.authToken,
+					send,
+					messageId: message.messageId,
+					userId: message.userId,
+				})
+				return
+			}
+
+			if ('async' in cmdResult && cmdResult.response === '__SPAWN__') {
+				const spawnCmd = parseSpawnCommand(prompt)
+				if (spawnCmd) {
+					// Inherit parent's CLI unless explicitly overridden
+					const activeCli = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
+					void spawnSubagent({
+						chatId,
+						task: spawnCmd.task,
+						label: spawnCmd.label,
+						cli: spawnCmd.cli || activeCli,
+						manifests,
+						defaultCli: config.defaultCli,
+						workingDirectory: config.workingDirectory,
+						send,
+					})
+					return
+				}
+			}
+			console.log(`[jsonl-bridge] Command handled: ${text}`)
+			await send(chatId, cmdResult.response)
+			return
+		}
+
+		// Check if busy - queue message if so
+		if (sessionStore.isBusy(chatId)) {
+			const queueLen = sessionStore.getQueueLength(chatId)
+			if (queueLen >= 5) {
+				await send(chatId, '⚠️ Queue full (5 messages). Wait for current task or /stop.')
+				return
+			}
+			sessionStore.enqueue(chatId, {
+				id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+				text: prompt,
+				attachments: attachments?.map(a => ({ localPath: a.localPath })),
+				createdAt: Date.now(),
+			})
+			await send(chatId, `📥 Queued (${queueLen + 1} pending). Will process after current task.`)
+			return
+		}
+
+		await processMessage(chatId, prompt, attachments)
 	}
 
 	const handleCallbackQuery = async (query: CallbackQuery) => {
