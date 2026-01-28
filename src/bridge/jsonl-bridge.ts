@@ -383,6 +383,11 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		}
 	}
 
+	if (trimmed === '/restart') {
+		// Signal restart - will be handled by the bridge to trigger process exit
+		return { handled: true, response: '__RESTART__', async: true }
+	}
+
 	// Cron commands
 	if (cronService && trimmed.startsWith('/cron')) {
 		const args = trimmed.slice(5).trim()
@@ -1404,6 +1409,18 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					return
 				}
 			}
+
+			if ('async' in cmdResult && cmdResult.response === '__RESTART__') {
+				await send(chatId, '🔄 Restarting gateway...')
+				console.log('[jsonl-bridge] Restart requested via /restart command')
+				// Give the message time to send, then exit with code 0
+				// The daemon should be restarted manually or via a process manager
+				setTimeout(() => {
+					process.exit(0)
+				}, 500)
+				return
+			}
+
 			console.log(`[jsonl-bridge] Command handled: ${text}`)
 			await send(chatId, cmdResult.response)
 			return
