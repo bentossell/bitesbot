@@ -54,21 +54,22 @@ export class LinksIndexManager {
     }
 
     // Build forward links (what each file links to)
+    // Use full relative path with .md extension as key to avoid collisions
+    // e.g., memory/foo.md stays as "memory/foo.md" instead of "memory/foo"
     for (const link of links) {
       const { term, sourceFile } = link;
       const relativeSource = getRelativePath(sourceFile, this.workspaceDir);
 
-      // Find or create entry for the source file
-      const sourceBaseName = relativeSource.replace(/\.md$/, '');
-      if (!index[sourceBaseName]) {
-        index[sourceBaseName] = {
+      // Find or create entry for the source file using full path as key
+      if (!index[relativeSource]) {
+        index[relativeSource] = {
           linkedFrom: [],
           linksTo: [],
         };
       }
 
-      if (!index[sourceBaseName].linksTo.includes(term)) {
-        index[sourceBaseName].linksTo.push(term);
+      if (!index[relativeSource].linksTo.includes(term)) {
+        index[relativeSource].linksTo.push(term);
       }
     }
 
