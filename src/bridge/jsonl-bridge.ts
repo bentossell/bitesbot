@@ -1138,6 +1138,9 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const STREAM_MIN_CHARS = 800
 		const STREAM_IDLE_MS = 1500
 
+		// Track files to send at completion (during streaming we just note them)
+		const pendingFiles: Array<{ path: string; caption?: string }> = []
+
 		const flushStreamBuffer = async (force = false) => {
 			if (streamTimer) {
 				clearTimeout(streamTimer)
@@ -1145,7 +1148,17 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			}
 			if (!streamBuffer || (!force && streamBuffer.length < STREAM_MIN_CHARS)) return
 			
-			const toSend = streamBuffer.trim()
+			// Extract any [Sendfile:] commands from streaming text
+			const { files, remainingText } = extractSendfileCommands(streamBuffer)
+			
+			// Queue files to send after completion (don't send mid-stream)
+			for (const file of files) {
+				if (!pendingFiles.some(f => f.path === file.path)) {
+					pendingFiles.push(file)
+				}
+			}
+			
+			const toSend = remainingText.trim()
 			streamBuffer = ''
 			if (toSend && !streamedTexts.has(toSend)) {
 				streamedTexts.add(toSend)
@@ -1212,12 +1225,24 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 					void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
+					
+					// Send any files that were queued during streaming
+					for (const file of pendingFiles) {
+						console.log(`[jsonl-bridge] Sending queued file attachment: ${file.path}`)
+						const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
+						if (!sent) {
+							await send(chatId, `❌ Failed to send file: ${file.path}`)
+						}
+					}
+					
 					if (evt.answer) {
 						void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
 						
-						// Extract and send any file attachments from the response
+						// Extract and send any file attachments from the response (for non-streaming case)
 						const { files, remainingText } = extractSendfileCommands(evt.answer)
 						for (const file of files) {
+							// Skip if already sent from pendingFiles
+							if (pendingFiles.some(f => f.path === file.path)) continue
 							console.log(`[jsonl-bridge] Sending file attachment: ${file.path}`)
 							const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
 							if (!sent) {
