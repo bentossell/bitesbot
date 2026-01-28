@@ -7,6 +7,41 @@ export type SpawnCommandParseResult = {
 }
 
 /**
+ * Detect natural language spawn requests
+ * Examples:
+ *   "spawn a subagent to look through my thoughts"
+ *   "spawn subagent to research X"
+ *   "can you spawn a subagent for this task"
+ */
+export function parseNaturalSpawnRequest(text: string): SpawnCommandParseResult | null {
+	const lower = text.toLowerCase().trim()
+	
+	// Patterns that indicate a spawn request
+	const spawnPatterns = [
+		/^spawn\s+(?:a\s+)?subagent\s+(?:to\s+)?(.+)$/i,
+		/^(?:can\s+you\s+)?spawn\s+(?:a\s+)?subagent\s+(?:to\s+|for\s+)?(.+)$/i,
+		/^(?:please\s+)?spawn\s+(?:a\s+)?(?:new\s+)?subagent\s+(?:to\s+|for\s+|that\s+)?(.+)$/i,
+		/^run\s+(?:a\s+)?subagent\s+(?:to\s+|for\s+)?(.+)$/i,
+		/^start\s+(?:a\s+)?subagent\s+(?:to\s+|for\s+)?(.+)$/i,
+		/^(?:have|get)\s+(?:a\s+)?subagent\s+(?:to\s+)?(.+)$/i,
+	]
+	
+	for (const pattern of spawnPatterns) {
+		const match = lower.match(pattern)
+		if (match && match[1]) {
+			const task = match[1].trim()
+			// Don't match if task is too short or looks like a question
+			if (task.length < 3) continue
+			if (task.endsWith('?') && task.length < 20) continue
+			
+			return { task }
+		}
+	}
+	
+	return null
+}
+
+/**
  * Parse /spawn command
  * Formats:
  *   /spawn "task description"

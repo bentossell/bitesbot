@@ -25,6 +25,7 @@ import {
 } from './command-queue.js'
 import {
 	parseSpawnCommand,
+	parseNaturalSpawnRequest,
 	parseSubagentsCommand,
 	formatSubagentList,
 	formatSubagentAnnouncement,
@@ -1293,6 +1294,24 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			}
 			console.log(`[jsonl-bridge] Command handled: ${text}`)
 			await send(chatId, cmdResult.response)
+			return
+		}
+
+		// Check for natural language spawn requests (e.g., "spawn a subagent to...")
+		const naturalSpawn = parseNaturalSpawnRequest(prompt)
+		if (naturalSpawn) {
+			console.log(`[jsonl-bridge] Natural language spawn detected: "${naturalSpawn.task.slice(0, 50)}..."`)
+			const activeCli = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
+			void spawnSubagent({
+				chatId,
+				task: naturalSpawn.task,
+				label: naturalSpawn.label,
+				cli: naturalSpawn.cli || activeCli,
+				manifests,
+				defaultCli: config.defaultCli,
+				workingDirectory: config.workingDirectory,
+				send,
+			})
 			return
 		}
 
