@@ -671,11 +671,13 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			if ('async' in cmdResult && cmdResult.response === '__SPAWN__') {
 				const spawnCmd = parseSpawnCommand(prompt)
 				if (spawnCmd) {
+					// Inherit parent's CLI unless explicitly overridden
+					const activeCli = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
 					void spawnSubagent({
 						chatId,
 						task: spawnCmd.task,
 						label: spawnCmd.label,
-						cli: spawnCmd.cli,
+						cli: spawnCmd.cli || activeCli,
 						manifests,
 						defaultCli: config.defaultCli,
 						workingDirectory: config.workingDirectory,
