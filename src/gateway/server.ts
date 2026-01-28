@@ -22,12 +22,17 @@ import type {
 	TypingRequest,
 } from '../protocol/types.js'
 import { PROTOCOL_VERSION } from '../protocol/types.js'
+import type { McpServerHandle } from '../mcp/server.js'
 
 export type GatewayServerHandle = {
 	close: () => Promise<void>
 	startedAt: Date
 	getConnections: () => number
 	notifyRestart: () => Promise<void>
+}
+
+export type GatewayServerOptions = {
+	mcpServer?: McpServerHandle
 }
 
 const readBody = async (req: HttpIncomingMessage) => {
@@ -120,7 +125,8 @@ const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 	})
 }
 
-export const startGatewayServer = async (config: GatewayConfig): Promise<GatewayServerHandle> => {
+export const startGatewayServer = async (config: GatewayConfig, options: GatewayServerOptions = {}): Promise<GatewayServerHandle> => {
+	const { mcpServer } = options
 	const bot = new Bot(config.botToken)
 	const startedAt = new Date()
 	let botInfo: Awaited<ReturnType<typeof bot.api.getMe>> | undefined
@@ -218,6 +224,19 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 				const message = error instanceof Error ? error.message : 'unknown error'
 				sendJson(res, 400, { ok: false, error: message })
 			}
+			return
+		}
+
+		// MCP SSE endpoint
+		if (mcpServer && req.method === 'GET' && path === '/mcp/sse') {
+			console.log('[mcp] SSE connection request')
+			await mcpServer.handleSse(req, res)
+			return
+		}
+
+		// MCP messages endpoint
+		if (mcpServer && req.method === 'POST' && path === '/mcp/messages') {
+			await mcpServer.handleMessages(req, res)
 			return
 		}
 
