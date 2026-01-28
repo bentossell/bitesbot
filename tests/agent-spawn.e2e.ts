@@ -9,9 +9,7 @@ const DROID_PATH = join(homedir(), '.local/bin/droid')
 const TIMEOUT_MS = 60_000
 
 const hasDroid = existsSync(DROID_PATH)
-const hasApiKeys = !!(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY)
-
-describe.skipIf(!hasDroid || !hasApiKeys)('agent-spawn e2e', () => {
+describe.skipIf(!hasDroid)('agent-spawn e2e', () => {
 	describe('droid CLI', () => {
 		it('spawns and receives session_start event', async () => {
 			const events: Record<string, unknown>[] = []
@@ -133,8 +131,8 @@ describe.skipIf(!hasDroid || !hasApiKeys)('agent-spawn e2e', () => {
 })
 
 describe('agent-spawn e2e (skipped - missing deps)', () => {
-	it.skipIf(hasDroid && hasApiKeys)('requires droid CLI and API keys', () => {
-		console.log(`Droid exists: ${hasDroid}, API keys: ${hasApiKeys}`)
-		console.log('Skipping e2e tests - run with ANTHROPIC_API_KEY or OPENAI_API_KEY set')
+	it.skipIf(hasDroid)('requires droid CLI', () => {
+		console.log(`Droid exists: ${hasDroid}`)
+		console.log('Skipping e2e tests - install droid CLI at ~/.local/bin/droid')
 	})
 })
