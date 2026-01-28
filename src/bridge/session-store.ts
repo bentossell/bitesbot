@@ -17,6 +17,7 @@ export const setWorkspaceDir = (workspaceDir: string) => {
 export type ChatSettings = {
 	streaming: boolean
 	verbose: boolean
+	model?: string // Selected model ID (e.g., claude-opus-4-5-20251101)
 }
 
 type ResumeTokenStore = {
@@ -36,6 +37,7 @@ type SessionLogEntry = {
 }
 
 const DEFAULT_STORE: ResumeTokenStore = { version: 1, tokens: {}, activeCli: {}, chatSettings: {} }
+// Note: verbose is a hidden feature (off by default) - shows tool names/outputs
 const DEFAULT_CHAT_SETTINGS: ChatSettings = { streaming: false, verbose: false }
 
 export const loadResumeTokens = async (): Promise<ResumeTokenStore> => {
