@@ -123,8 +123,16 @@ export const createWizardRpc = (context: WizardRpcContext) => {
 				if (method === 'POST' && sub.length === 2) {
 					try {
 						const body = await parseJson<WizardSessionUpdate>(req)
-					if (body.data) session.update(body.data)
-					if (body.stepId) session.setStep(body.stepId)
+						if (body.data) {
+							session.update(body.data)
+						}
+						if (body.stepId) {
+							const ok = session.setStep(body.stepId)
+							if (!ok) {
+								sendJson(res, 400, { ok: false, error: 'invalid stepId' })
+								return true
+							}
+						}
 						sendJson(res, 200, { ok: true, session: session.snapshot() })
 					} catch (error) {
 						const message = error instanceof Error ? error.message : 'invalid json'
@@ -174,6 +182,13 @@ export const createWizardRpc = (context: WizardRpcContext) => {
 				if (!data.workspacePath) {
 					sendJson(res, 400, { ok: false, error: 'workspacePath is required' })
 					return true
+				}
+				if (data.chatId) {
+					const parsed = Number.parseInt(data.chatId, 10)
+					if (Number.isNaN(parsed)) {
+						sendJson(res, 400, { ok: false, error: 'chatId must be numeric' })
+						return true
+					}
 				}
 
 				const workspace = await bootstrapWorkspace({
