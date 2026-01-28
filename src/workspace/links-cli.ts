@@ -8,7 +8,7 @@ import { join } from 'node:path';
 const program = new Command();
 
 program
-  .name('links')
+  .name('tg-links')
   .description('Workspace bidirectional links management')
   .version('0.1.0');
 
