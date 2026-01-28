@@ -70,6 +70,73 @@ export const calculateNextRun = (schedule: CronSchedule, now: Date = new Date())
 	}
 }
 
+/**
+ * Find missed cron runs between lastRunAt and now.
+ * Returns timestamps of all missed runs (if any).
+ * Only checks cron schedules (not 'at' or 'every').
+ */
+export const findMissedRuns = (
+	schedule: CronSchedule,
+	lastRunAtMs: number | undefined,
+	now: Date = new Date()
+): number[] => {
+	if (schedule.kind !== 'cron' || !lastRunAtMs) return []
+
+	const missed: number[] = []
+	const parts = schedule.expr.trim().split(/\s+/)
+	if (parts.length !== 5) return []
+
+	const [minExpr, hourExpr, domExpr, monExpr, dowExpr] = parts
+
+	const matchField = (expr: string, value: number): boolean => {
+		if (expr === '*') return true
+		if (expr.includes(',')) {
+			return expr.split(',').some((p) => matchField(p.trim(), value))
+		}
+		if (expr.includes('/')) {
+			const [, step] = expr.split('/')
+			const stepNum = parseInt(step, 10)
+			return value % stepNum === 0
+		}
+		if (expr.includes('-')) {
+			const [start, end] = expr.split('-').map((n) => parseInt(n, 10))
+			return value >= start && value <= end
+		}
+		return parseInt(expr, 10) === value
+	}
+
+	// Start from the minute after last run
+	const candidate = new Date(lastRunAtMs)
+	candidate.setSeconds(0, 0)
+	candidate.setMinutes(candidate.getMinutes() + 1)
+
+	const nowMs = now.getTime()
+
+	// Check each minute between last run and now (up to 24 hours max to avoid long loops)
+	const maxIterations = 24 * 60
+	for (let i = 0; i < maxIterations && candidate.getTime() < nowMs; i++) {
+		const min = candidate.getMinutes()
+		const hour = candidate.getHours()
+		const dom = candidate.getDate()
+		const mon = candidate.getMonth() + 1
+		const dow = candidate.getDay()
+
+		if (
+			matchField(minExpr, min) &&
+			matchField(hourExpr, hour) &&
+			matchField(domExpr, dom) &&
+			matchField(monExpr, mon) &&
+			matchField(dowExpr, dow)
+		) {
+			missed.push(candidate.getTime())
+		}
+
+		candidate.setMinutes(candidate.getMinutes() + 1)
+	}
+
+	return missed
+}
+
 export const isDue = (nextRunAtMs: number | undefined, now: Date = new Date()): boolean => {
 	if (!nextRunAtMs) return false
 	return now.getTime() >= nextRunAtMs
