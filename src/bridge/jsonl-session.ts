@@ -112,21 +112,20 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 
 		let args: string[]
 
-		// Quote the prompt for shell execution
-		const quotedPrompt = `"${prompt.replace(/"/g, '\\"')}"`
-
 		if (this.cli === 'droid') {
 			// Droid uses: droid exec --output-format stream-json --auto high "prompt"
+			// Note: --auto and --skip-permissions-unsafe are mutually exclusive
+			const hasSkipPerms = this.manifest.args.includes('--skip-permissions-unsafe')
 			args = [
 				'exec',
 				'--output-format', 'stream-json',
-				'--auto', 'high',
+				...(hasSkipPerms ? [] : ['--auto', 'high']),
 				...this.manifest.args,
 			]
 			if (resume?.sessionId) {
 				args.push('-s', resume.sessionId)
 			}
-			args.push(quotedPrompt)
+			args.push(prompt)
 		} else {
 			// Claude uses: claude -p --output-format stream-json --verbose "prompt"
 			args = [
@@ -138,17 +137,16 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			if (resume?.sessionId) {
 				args.push('--resume', resume.sessionId)
 			}
-			args.push(quotedPrompt)
+			args.push(prompt)
 		}
 
-		console.log(`[jsonl-session] Spawning: ${this.manifest.command} ${args.join(' ')}`)
+		console.log(`[jsonl-session] Spawning: ${this.manifest.command} ${args.slice(0, -1).join(' ')} "<prompt>"`)
 		console.log(`[jsonl-session] Working dir: ${this.workingDir}`)
 
 		this.process = spawn(this.manifest.command, args, {
 			cwd: this.workingDir,
 			env: process.env,
 			stdio: ['pipe', 'pipe', 'pipe'],
-			shell: true,
 		})
 
 		// Close stdin to signal we're done sending input
