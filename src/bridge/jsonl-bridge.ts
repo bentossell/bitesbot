@@ -1,5 +1,6 @@
 import WebSocket from 'ws'
-import type { GatewayEvent, IncomingMessage } from '../protocol/types.js'
+import type { GatewayEvent, IncomingMessage, CallbackQuery } from '../protocol/types.js'
+import type { Plan } from '../protocol/plan-types.js'
 import { type CLIManifest, loadAllManifests } from './manifest.js'
 import {
 	JsonlSession,
@@ -25,6 +26,12 @@ import {
 	formatSubagentAnnouncement,
 	findSubagent,
 } from './subagent-commands.js'
+import {
+	storePendingPlan,
+	getPendingPlan,
+	removePendingPlan,
+	formatPlanForDisplay,
+} from './plan-approval-store.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -148,6 +155,16 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		const newValue = trimmed === '/verbose off' ? false : trimmed === '/verbose on' ? true : !current.verbose
 		await persistentStore.setChatSettings(chatId, { verbose: newValue })
 		return { handled: true, response: `Verbose ${newValue ? 'enabled' : 'disabled'}. Tool ${newValue ? 'names and outputs will be shown' : 'details hidden'}.` }
+	}
+
+	// /spec command - create plan for approval
+	if (trimmed.startsWith('/spec ')) {
+		const task = trimmed.slice(6).trim()
+		if (!task) {
+			return { handled: true, response: 'Usage: /spec <task description>' }
+		}
+		// Signal that this is a spec command - actual planning handled in bridge
+		return { handled: true, response: '__SPEC__', async: true }
 	}
 
 	// Subagent commands - /spawn handled async in bridge, return signal here
@@ -317,6 +334,179 @@ const formatToolName = (name: string): string => {
 		FetchUrl: '🌐',
 	}
 	return `${icons[name] || '🔧'} ${name}`
+}
+
+type CreatePlanOptions = {
+	chatId: number | string
+	task: string
+	cli: string
+	manifests: Map<string, CLIManifest>
+	workingDirectory: string
+	send: (chatId: number | string, text: string) => Promise<void>
+}
+
+const createPlanForApproval = async (opts: CreatePlanOptions): Promise<void> => {
+	const { chatId, task, cli, manifests, workingDirectory, send } = opts
+
+	const manifest = manifests.get(cli)
+	if (!manifest) {
+		await send(chatId, `❌ CLI not found: ${cli}`)
+		return
+	}
+
+	await send(chatId, '📋 Creating plan...')
+	console.log(`[jsonl-bridge] Creating plan for task: "${task.slice(0, 50)}..."`)
+
+	// Create a session to generate the plan
+	const session = new JsonlSession(`plan-${chatId}-${Date.now()}`, manifest, workingDirectory)
+
+	let planText = ''
+	const planPrompt = `Create a detailed implementation plan for the following task. Format your response as a structured plan with:
+
+TITLE: <brief title>
+
+STEPS:
+1. <step description> [Files: file1.ts, file2.ts]
+2. <step description> [Files: file3.ts]
+...
+
+RISKS:
+- <potential risk or consideration>
+
+Task: ${task}
+
+Provide ONLY the plan in the format above, no additional commentary.`
+
+	session.on('event', (evt: BridgeEvent) => {
+		switch (evt.type) {
+			case 'text':
+				if (evt.text) {
+					planText = evt.text
+				}
+				break
+
+			case 'completed': {
+				console.log(`[jsonl-bridge] Plan generation completed`)
+
+				// Parse the plan from the response
+				const plan = parsePlanFromText(planText || evt.answer || '')
+
+				if (!plan || plan.steps.length === 0) {
+					void send(chatId, '❌ Failed to generate plan. Please try again.')
+					return
+				}
+
+				// Store the pending plan
+				storePendingPlan({
+					chatId,
+					plan,
+					originalPrompt: task,
+					cli,
+					createdAt: new Date(),
+				})
+
+				// Send plan with inline buttons
+				void sendPlanWithButtons(chatId, plan, send)
+				break
+			}
+
+			case 'error':
+				console.log(`[jsonl-bridge] Plan generation error: ${evt.message}`)
+				void send(chatId, `❌ Plan generation failed: ${evt.message}`)
+				break
+		}
+	})
+
+	session.on('exit', (code) => {
+		console.log(`[jsonl-bridge] Plan session exited with code ${code}`)
+	})
+
+	session.run(planPrompt)
+}
+
+const parsePlanFromText = (text: string): Plan | null => {
+	try {
+		const lines = text.split('\n')
+		let title = 'Implementation Plan'
+		const steps: Array<{ id: number; description: string; files?: string[] }> = []
+		const risks: string[] = []
+
+		let section: 'none' | 'steps' | 'risks' = 'none'
+
+		for (const line of lines) {
+			const trimmed = line.trim()
+
+			if (trimmed.startsWith('TITLE:')) {
+				title = trimmed.slice(6).trim()
+			} else if (trimmed === 'STEPS:') {
+				section = 'steps'
+			} else if (trimmed === 'RISKS:') {
+				section = 'risks'
+			} else if (section === 'steps' && /^\d+\./.test(trimmed)) {
+				const match = trimmed.match(/^(\d+)\.\s*(.+)$/)
+				if (match) {
+					const id = Number.parseInt(match[1], 10)
+					let description = match[2]
+					let files: string[] | undefined
+
+					// Extract files if present
+					const filesMatch = description.match(/\[Files?:\s*([^\]]+)\]/)
+					if (filesMatch) {
+						files = filesMatch[1].split(',').map((f) => f.trim())
+						description = description.replace(/\[Files?:\s*[^\]]+\]/, '').trim()
+					}
+
+					steps.push({ id, description, files })
+				}
+			} else if (section === 'risks' && trimmed.startsWith('-')) {
+				risks.push(trimmed.slice(1).trim())
+			}
+		}
+
+		if (steps.length === 0) {
+			return null
+		}
+
+		return {
+			title,
+			steps,
+			risks: risks.length > 0 ? risks : undefined,
+		}
+	} catch {
+		return null
+	}
+}
+
+const sendPlanWithButtons = async (
+	chatId: number | string,
+	plan: Plan,
+	send: (chatId: number | string, text: string) => Promise<void>
+) => {
+	const planText = formatPlanForDisplay(plan)
+
+	// Send via HTTP endpoint with inline buttons
+	const httpUrl = 'http://localhost:8787'
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+
+	try {
+		await fetch(`${httpUrl}/send`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({
+				chatId,
+				text: planText,
+				inlineButtons: [
+					[
+						{ text: '✅ Approve', callbackData: 'plan:approve' },
+						{ text: '❌ Cancel', callbackData: 'plan:cancel' },
+					],
+				],
+			}),
+		})
+	} catch (err) {
+		console.error('[jsonl-bridge] Failed to send plan with buttons:', err)
+		await send(chatId, planText + '\n\n(Failed to add buttons)')
+	}
 }
 
 type SpawnSubagentOptions = {
@@ -494,6 +684,21 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			persistentStore,
 		})
 		if (cmdResult.handled) {
+			// Handle /spec command - create plan for approval
+			if ('async' in cmdResult && cmdResult.response === '__SPEC__') {
+				const task = prompt.slice(6).trim()
+				const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
+				void createPlanForApproval({
+					chatId,
+					task,
+					cli: cliName,
+					manifests,
+					workingDirectory: config.workingDirectory,
+					send,
+				})
+				return
+			}
+
 			// Handle /spawn command specially - spawn a subagent
 			if ('async' in cmdResult && cmdResult.response === '__SPAWN__') {
 				const spawnCmd = parseSpawnCommand(prompt)
@@ -678,11 +883,47 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		session.run(prompt, resumeToken)
 	}
 
+	const handleCallbackQuery = async (query: CallbackQuery) => {
+		const { chatId, data } = query
+
+		if (data === 'plan:approve') {
+			const pendingPlan = getPendingPlan(chatId)
+			if (!pendingPlan) {
+				await send(chatId, '❌ No pending plan found.')
+				return
+			}
+
+			removePendingPlan(chatId)
+			await send(chatId, '✅ Plan approved! Executing...')
+
+			// Execute the plan by running the original prompt with plan context
+			const planContext = `You are executing an approved plan. Here is the plan:\n\n${formatPlanForDisplay(pendingPlan.plan)}\n\nOriginal task: ${pendingPlan.originalPrompt}\n\nPlease execute this plan step by step.`
+
+			void handleMessage({
+				id: `plan-exec-${Date.now()}`,
+				chatId,
+				text: planContext,
+				userId: query.userId,
+				messageId: query.messageId,
+				timestamp: new Date().toISOString(),
+				raw: { planExecution: true },
+			})
+		} else if (data === 'plan:cancel') {
+			const pendingPlan = getPendingPlan(chatId)
+			if (pendingPlan) {
+				removePendingPlan(chatId)
+				await send(chatId, '❌ Plan cancelled.')
+			}
+		}
+	}
+
 	ws.on('message', (data) => {
 		try {
 			const event = JSON.parse(data.toString()) as GatewayEvent
 			if (event.type === 'message.received') {
 				void handleMessage(event.payload)
+			} else if (event.type === 'callback.query') {
+				void handleCallbackQuery(event.payload)
 			}
 		} catch {
 			// ignore
