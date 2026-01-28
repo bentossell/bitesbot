@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'error' | 'stopped'
 
@@ -16,6 +19,8 @@ export type SubagentRunRecord = {
 	endedAt?: number
 	result?: string
 	error?: string
+	/** Whether the result has been injected into parent context */
+	resultInjected?: boolean
 }
 
 export type SpawnOptions = {
@@ -151,7 +156,111 @@ export class SubagentRegistry {
 		}
 		return pruned
 	}
+
+	/**
+	 * Get completed subagent results that haven't been injected yet
+	 */
+	getPendingResults(chatId: number | string): SubagentRunRecord[] {
+		return this.list(chatId).filter(r => 
+			(r.status === 'completed' || r.status === 'error') && 
+			!r.resultInjected
+		)
+	}
+
+	/**
+	 * Mark results as injected into parent context
+	 */
+	markResultsInjected(runIds: string[]): void {
+		for (const runId of runIds) {
+			this.update(runId, { resultInjected: true })
+		}
+	}
+
+	/**
+	 * Export all records for persistence
+	 */
+	toJSON(): SubagentRunRecord[] {
+		return [...this.runs.values()]
+	}
+
+	/**
+	 * Import records from persistence
+	 */
+	fromJSON(records: SubagentRunRecord[]): void {
+		this.runs.clear()
+		this.byChatId.clear()
+		
+		for (const record of records) {
+			this.runs.set(record.runId, record)
+			const chatKey = String(record.chatId)
+			if (!this.byChatId.has(chatKey)) {
+				this.byChatId.set(chatKey, new Set())
+			}
+			this.byChatId.get(chatKey)!.add(record.runId)
+		}
+	}
+}
+
+// Persistence path
+const DEFAULT_REGISTRY_PATH = join(homedir(), '.config', 'tg-gateway', 'subagent-registry.json')
+let registryPath = DEFAULT_REGISTRY_PATH
+
+export const setSubagentRegistryPath = (path: string) => {
+	registryPath = path
 }
 
 // Global singleton instance
 export const subagentRegistry = new SubagentRegistry()
+
+/**
+ * Save registry to disk
+ */
+export const saveSubagentRegistry = async (): Promise<void> => {
+	try {
+		await mkdir(dirname(registryPath), { recursive: true })
+		const data = JSON.stringify(subagentRegistry.toJSON(), null, 2)
+		await writeFile(registryPath, data, 'utf-8')
+	} catch (err) {
+		console.error('[subagent-registry] Failed to save:', err)
+	}
+}
+
+/**
+ * Load registry from disk
+ */
+export const loadSubagentRegistry = async (): Promise<number> => {
+	try {
+		const data = await readFile(registryPath, 'utf-8')
+		const records = JSON.parse(data) as SubagentRunRecord[]
+		subagentRegistry.fromJSON(records)
+		return records.length
+	} catch {
+		// File doesn't exist or invalid - start fresh
+		return 0
+	}
+}
+
+/**
+ * Format pending results for injection into prompt
+ */
+export const formatPendingResultsForInjection = (chatId: number | string): string | null => {
+	const pending = subagentRegistry.getPendingResults(chatId)
+	if (pending.length === 0) return null
+
+	const lines: string[] = ['[Subagent Results]']
+	
+	for (const record of pending) {
+		const label = record.label || `Subagent #${record.runId.slice(0, 8)}`
+		const status = record.status === 'completed' ? '✅' : '❌'
+		const output = record.result || record.error || '(no output)'
+		
+		lines.push(`${status} ${label}: ${output}`)
+	}
+	
+	lines.push('[/Subagent Results]')
+	
+	// Mark as injected
+	subagentRegistry.markResultsInjected(pending.map(r => r.runId))
+	
+	return lines.join('\n')
+}

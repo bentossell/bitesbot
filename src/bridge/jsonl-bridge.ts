@@ -11,7 +11,13 @@ import { createPersistentSessionStore, type PersistentSessionStore } from './ses
 import { syncSessionToMemory } from './memory-sync.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
 import { logToFile } from '../logging/file.js'
-import { subagentRegistry, type SubagentRunRecord } from './subagent-registry.js'
+import {
+	subagentRegistry,
+	type SubagentRunRecord,
+	saveSubagentRegistry,
+	loadSubagentRegistry,
+	formatPendingResultsForInjection,
+} from './subagent-registry.js'
 import {
 	parseSpawnCommand,
 	parseSubagentsCommand,
@@ -376,14 +382,16 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 				subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
 				// Announce completion
 				void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
-				// Prune old runs
+				// Prune old runs and persist
 				subagentRegistry.prune(chatId)
+				void saveSubagentRegistry()
 				break
 
 			case 'error':
 				console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
 				subagentRegistry.markError(record.runId, evt.message)
 				void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
+				void saveSubagentRegistry()
 				break
 		}
 	})
@@ -414,6 +422,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	await cronService.start()
 	
 	console.log(`[jsonl-bridge] Loaded ${persistentStore.resumeTokens.size} resume tokens`)
+
+	// Load subagent registry from disk
+	const subagentCount = await loadSubagentRegistry()
+	if (subagentCount > 0) {
+		console.log(`[jsonl-bridge] Restored ${subagentCount} subagent records`)
+	}
 
 	// Sync session logs to memory on startup (gateway restart)
 	try {
@@ -505,6 +519,13 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		// Use active CLI for this chat, or default (check persistent store first)
 		const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
 		
+		// Inject any pending subagent results into the prompt
+		const pendingResults = formatPendingResultsForInjection(chatId)
+		if (pendingResults) {
+			prompt = `${pendingResults}\n\n${prompt}`
+			console.log(`[jsonl-bridge] Injected subagent results into prompt`)
+		}
+
 		// Log user message
 		void persistentStore.logMessage(chatId, 'user', prompt, undefined, cliName)
 		const manifest = manifests.get(cliName)
