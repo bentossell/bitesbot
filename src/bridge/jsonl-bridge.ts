@@ -63,6 +63,7 @@ export type BridgeConfig = {
 	adaptersDir: string
 	defaultCli: string
 	workingDirectory: string
+	allowedChatIds?: number[]
 }
 
 export type BridgeHandle = {
@@ -486,6 +487,65 @@ const sendTyping = async (
 	} catch {
 		// ignore typing errors
 	}
+}
+
+const sendFileToGateway = async (
+	baseUrl: string,
+	authToken: string | undefined,
+	chatId: number | string,
+	filePath: string,
+	caption?: string
+) => {
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+	if (authToken) {
+		headers.Authorization = `Bearer ${authToken}`
+	}
+
+	const httpUrl = baseUrl.replace(/^ws/, 'http').replace('/events', '')
+	try {
+		const response = await fetch(`${httpUrl}/send`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ chatId, documentPath: filePath, caption }),
+		})
+		if (!response.ok) {
+			const body = await response.text().catch(() => '')
+			void logToFile('error', 'bridge send file non-200', {
+				status: response.status,
+				chatId,
+				filePath,
+				body: body.slice(0, 1000),
+			})
+			return false
+		}
+		return true
+	} catch (err) {
+		console.error(`[jsonl-bridge] Failed to send file:`, err)
+		const message = err instanceof Error ? err.message : 'unknown error'
+		void logToFile('error', 'bridge send file failed', { error: message, chatId, filePath })
+		return false
+	}
+}
+
+/**
+ * Extract [Sendfile: /path/to/file] patterns from text
+ * Returns array of { filePath, caption? } and the remaining text
+ */
+const extractSendfileCommands = (text: string): { files: Array<{ path: string; caption?: string }>; remainingText: string } => {
+	const pattern = /\[Sendfile:\s*([^\]]+)\](?:\s*\n*(?:Caption:\s*([^\n]+))?)?/gi
+	const files: Array<{ path: string; caption?: string }> = []
+	
+	let match
+	while ((match = pattern.exec(text)) !== null) {
+		const filePath = match[1].trim()
+		const caption = match[2]?.trim()
+		files.push({ path: filePath, caption })
+	}
+	
+	// Remove the sendfile commands from text
+	const remainingText = text.replace(pattern, '').trim()
+	
+	return { files, remainingText }
 }
 
 const formatToolName = (name: string): string => {
@@ -1014,8 +1074,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const typing = (chatId: number | string) =>
 		sendTyping(config.gatewayUrl, config.authToken, chatId)
 
-	// Track the primary chat for cron job delivery
-	let primaryChatId: number | string | null = null
+	// Track the primary chat for cron job delivery and MCP spawn
+	// Initialize from config if available so MCP can spawn before any Telegram message
+	let primaryChatId: number | string | null = config.allowedChatIds?.[0] ?? null
+	if (primaryChatId) {
+		console.log(`[jsonl-bridge] Primary chat initialized from config: ${primaryChatId}`)
+	}
 
 	const processMessage = async (chatId: number | string, prompt: string) => {
 		const t0 = Date.now()
@@ -1150,14 +1214,29 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 					if (evt.answer) {
 						void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
-						// If streaming was on, check if we already sent this content
-						if (getSettings().streaming && streamedTexts.has(evt.answer.trim())) {
-							// Already sent via streaming
-						} else {
-							const chunks = splitMessage(evt.answer)
-							for (const chunk of chunks) {
-								if (!streamedTexts.has(chunk.trim())) {
-									await send(chatId, chunk)
+						
+						// Extract and send any file attachments from the response
+						const { files, remainingText } = extractSendfileCommands(evt.answer)
+						for (const file of files) {
+							console.log(`[jsonl-bridge] Sending file attachment: ${file.path}`)
+							const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
+							if (!sent) {
+								await send(chatId, `❌ Failed to send file: ${file.path}`)
+							}
+						}
+						
+						// Send remaining text (if any, and not already streamed)
+						const textToSend = files.length > 0 ? remainingText : evt.answer
+						if (textToSend) {
+							// If streaming was on, check if we already sent this content
+							if (getSettings().streaming && streamedTexts.has(textToSend.trim())) {
+								// Already sent via streaming
+							} else {
+								const chunks = splitMessage(textToSend)
+								for (const chunk of chunks) {
+									if (!streamedTexts.has(chunk.trim())) {
+										await send(chatId, chunk)
+									}
 								}
 							}
 						}

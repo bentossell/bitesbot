@@ -1,11 +1,11 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage as HttpIncomingMessage, ServerResponse } from 'node:http'
-import { createWriteStream } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { mkdir, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { pipeline } from 'node:stream/promises'
-import { Bot } from 'grammy'
+import { Bot, InputFile } from 'grammy'
 import { WebSocketServer } from 'ws'
 import { isAuthorized } from './auth.js'
 import type { GatewayConfig } from './config.js'
@@ -29,6 +29,7 @@ export type GatewayServerHandle = {
 	startedAt: Date
 	getConnections: () => number
 	notifyRestart: () => Promise<void>
+	addMcpServer: (mcp: McpServerHandle) => void
 }
 
 export type GatewayServerOptions = {
@@ -114,6 +115,21 @@ const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 		})
 	}
 
+	// Send local file as document
+	if (payload.documentPath) {
+		// Verify file exists
+		await stat(payload.documentPath)
+		const filename = payload.documentFilename ?? basename(payload.documentPath)
+		const inputFile = new InputFile(createReadStream(payload.documentPath), filename)
+		const caption = payload.caption ?? payload.text
+		return bot.api.sendDocument(chatId, inputFile, {
+			caption: caption ? toTelegramMarkdown(caption) : undefined,
+			reply_to_message_id: payload.replyToMessageId,
+			parse_mode: 'MarkdownV2',
+			reply_markup,
+		})
+	}
+
 	if (!payload.text) {
 		throw new Error('text is required when no attachment is provided')
 	}
@@ -126,7 +142,7 @@ const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 }
 
 export const startGatewayServer = async (config: GatewayConfig, options: GatewayServerOptions = {}): Promise<GatewayServerHandle> => {
-	const { mcpServer } = options
+	let mcpServer = options.mcpServer
 	const bot = new Bot(config.botToken)
 	const startedAt = new Date()
 	let botInfo: Awaited<ReturnType<typeof bot.api.getMe>> | undefined
@@ -387,6 +403,9 @@ export const startGatewayServer = async (config: GatewayConfig, options: Gateway
 		startedAt,
 		getConnections: () => wss.clients.size,
 		notifyRestart,
+		addMcpServer: (mcp: McpServerHandle) => {
+			mcpServer = mcp
+		},
 		close: async () => {
 			// Notify active chats about shutdown
 			for (const chatId of activeChats) {

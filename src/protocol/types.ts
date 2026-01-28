@@ -29,6 +29,10 @@ export type OutboundMessage = {
 	text?: string
 	photoUrl?: string
 	documentUrl?: string
+	/** Local file path to send as document attachment */
+	documentPath?: string
+	/** Filename to use when sending documentPath (optional, defaults to basename) */
+	documentFilename?: string
 	caption?: string
 	replyToMessageId?: number
 	inlineButtons?: InlineButton[][]
