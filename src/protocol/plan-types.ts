@@ -17,5 +17,6 @@ export type PlanApprovalState = {
 	originalPrompt: string
 	cli: string
 	messageId?: number
-	createdAt: Date
+	userId?: number | string
+	createdAt: string // ISO string for serialization
 }

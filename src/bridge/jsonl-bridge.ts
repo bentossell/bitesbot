@@ -342,11 +342,13 @@ type CreatePlanOptions = {
 	cli: string
 	manifests: Map<string, CLIManifest>
 	workingDirectory: string
+	gatewayUrl: string
+	authToken?: string
 	send: (chatId: number | string, text: string) => Promise<void>
 }
 
 const createPlanForApproval = async (opts: CreatePlanOptions): Promise<void> => {
-	const { chatId, task, cli, manifests, workingDirectory, send } = opts
+	const { chatId, task, cli, manifests, workingDirectory, gatewayUrl, authToken, send } = opts
 
 	const manifest = manifests.get(cli)
 	if (!manifest) {
@@ -396,17 +398,17 @@ Provide ONLY the plan in the format above, no additional commentary.`
 					return
 				}
 
-				// Store the pending plan
+				// Store the pending plan (createdAt as ISO string for serialization)
 				storePendingPlan({
 					chatId,
 					plan,
 					originalPrompt: task,
 					cli,
-					createdAt: new Date(),
+					createdAt: new Date().toISOString(),
 				})
 
 				// Send plan with inline buttons
-				void sendPlanWithButtons(chatId, plan, send)
+				void sendPlanWithButtons(chatId, plan, gatewayUrl, authToken, send)
 				break
 			}
 
@@ -480,13 +482,18 @@ const parsePlanFromText = (text: string): Plan | null => {
 const sendPlanWithButtons = async (
 	chatId: number | string,
 	plan: Plan,
+	gatewayUrl: string,
+	authToken: string | undefined,
 	send: (chatId: number | string, text: string) => Promise<void>
 ) => {
 	const planText = formatPlanForDisplay(plan)
 
-	// Send via HTTP endpoint with inline buttons
-	const httpUrl = 'http://localhost:8787'
+	// Send via HTTP endpoint with inline buttons using configured gateway URL
+	const httpUrl = gatewayUrl.replace(/^ws/, 'http').replace('/events', '')
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+	if (authToken) {
+		headers.Authorization = `Bearer ${authToken}`
+	}
 
 	try {
 		await fetch(`${httpUrl}/send`, {
@@ -694,6 +701,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					cli: cliName,
 					manifests,
 					workingDirectory: config.workingDirectory,
+					gatewayUrl: config.gatewayUrl,
+					authToken: config.authToken,
 					send,
 				})
 				return
@@ -884,16 +893,17 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	}
 
 	const handleCallbackQuery = async (query: CallbackQuery) => {
-		const { chatId, data } = query
+		const { chatId, data, messageId, userId } = query
 
 		if (data === 'plan:approve') {
-			const pendingPlan = getPendingPlan(chatId)
+			// Pass messageId and userId for proper identification
+			const pendingPlan = getPendingPlan(chatId, messageId, userId)
 			if (!pendingPlan) {
 				await send(chatId, '❌ No pending plan found.')
 				return
 			}
 
-			removePendingPlan(chatId)
+			removePendingPlan(chatId, messageId, userId)
 			await send(chatId, '✅ Plan approved! Executing...')
 
 			// Execute the plan by running the original prompt with plan context
@@ -909,9 +919,9 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				raw: { planExecution: true },
 			})
 		} else if (data === 'plan:cancel') {
-			const pendingPlan = getPendingPlan(chatId)
+			const pendingPlan = getPendingPlan(chatId, messageId, userId)
 			if (pendingPlan) {
-				removePendingPlan(chatId)
+				removePendingPlan(chatId, messageId, userId)
 				await send(chatId, '❌ Plan cancelled.')
 			}
 		}

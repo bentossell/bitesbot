@@ -2,19 +2,48 @@ import type { Plan, PlanApprovalState } from '../protocol/plan-types.js'
 
 const pendingApprovals = new Map<string, PlanApprovalState>()
 
+// Generate a unique key that includes chatId and optional messageId/userId
+// This ensures approvals are tied to specific messages and users
+const makeKey = (chatId: number | string, messageId?: number, userId?: number | string): string => {
+	// Base key is chatId - for looking up pending plans by chat
+	const parts = [String(chatId)]
+	// Include userId if provided for user-specific validation
+	if (userId !== undefined) {
+		parts.push(String(userId))
+	}
+	return parts.join(':')
+}
+
 export const storePendingPlan = (state: PlanApprovalState): void => {
-	const key = String(state.chatId)
+	// Store by chat+user to prevent cross-user approval
+	const key = makeKey(state.chatId, state.messageId, state.userId)
 	pendingApprovals.set(key, state)
 }
 
-export const getPendingPlan = (chatId: number | string): PlanApprovalState | undefined => {
-	const key = String(chatId)
-	return pendingApprovals.get(key)
+export const getPendingPlan = (chatId: number | string, messageId?: number, userId?: number | string): PlanApprovalState | undefined => {
+	// Try exact match first (with userId)
+	if (userId !== undefined) {
+		const exactKey = makeKey(chatId, messageId, userId)
+		const exact = pendingApprovals.get(exactKey)
+		if (exact) return exact
+	}
+	// Fall back to chat-only key for backward compatibility
+	const fallbackKey = String(chatId)
+	return pendingApprovals.get(fallbackKey)
 }
 
-export const removePendingPlan = (chatId: number | string): void => {
-	const key = String(chatId)
-	pendingApprovals.delete(key)
+export const removePendingPlan = (chatId: number | string, messageId?: number, userId?: number | string): void => {
+	// Remove by exact key first
+	if (userId !== undefined) {
+		const exactKey = makeKey(chatId, messageId, userId)
+		if (pendingApprovals.has(exactKey)) {
+			pendingApprovals.delete(exactKey)
+			return
+		}
+	}
+	// Fall back to chat-only key
+	const fallbackKey = String(chatId)
+	pendingApprovals.delete(fallbackKey)
 }
 
 export const formatPlanForDisplay = (plan: Plan): string => {
