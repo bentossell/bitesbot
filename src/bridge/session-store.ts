@@ -3,9 +3,16 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { ResumeToken } from './jsonl-session.js'
 
-const CONFIG_DIR = join(homedir(), '.config', 'tg-gateway')
-const SESSIONS_DIR = join(CONFIG_DIR, 'sessions')
-const RESUME_TOKENS_PATH = join(CONFIG_DIR, 'resume-tokens.json')
+// Default paths (can be overridden with workspace)
+const DEFAULT_CONFIG_DIR = join(homedir(), '.config', 'tg-gateway')
+
+let SESSIONS_DIR = join(DEFAULT_CONFIG_DIR, 'sessions')
+let RESUME_TOKENS_PATH = join(DEFAULT_CONFIG_DIR, 'resume-tokens.json')
+
+export const setWorkspaceDir = (workspaceDir: string) => {
+	SESSIONS_DIR = join(workspaceDir, 'sessions')
+	RESUME_TOKENS_PATH = join(workspaceDir, '.state', 'resume-tokens.json')
+}
 
 type ResumeTokenStore = {
 	version: 1

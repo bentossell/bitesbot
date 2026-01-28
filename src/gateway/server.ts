@@ -12,6 +12,7 @@ import type { GatewayConfig } from './config.js'
 import { normalizeMessage } from './normalize.js'
 import { toTelegramMarkdown } from './telegram-markdown.js'
 import { logToFile } from '../logging/file.js'
+import { isVoiceAttachment, processVoiceAttachment } from './media.js'
 import type {
 	GatewayEvent,
 	HealthResponse,
@@ -48,13 +49,14 @@ const resolvePath = (req: HttpIncomingMessage) => {
 }
 
 // Download a Telegram file to local temp directory
-const downloadTelegramFile = async (bot: Bot, fileId: string, type: 'photo' | 'document'): Promise<string> => {
+const downloadTelegramFile = async (bot: Bot, fileId: string, type: 'photo' | 'document' | 'voice' | 'audio'): Promise<string> => {
 	const file = await bot.api.getFile(fileId)
 	if (!file.file_path) {
 		throw new Error('No file_path returned from Telegram')
 	}
 	
-	const ext = type === 'photo' ? 'jpg' : (file.file_path.split('.').pop() || 'bin')
+	const extMap: Record<string, string> = { photo: 'jpg', voice: 'ogg', audio: 'mp3' }
+	const ext = extMap[type] ?? (file.file_path.split('.').pop() || 'bin')
 	const localDir = join(tmpdir(), 'agent-gateway-files')
 	await mkdir(localDir, { recursive: true })
 	const localPath = join(localDir, `${fileId}.${ext}`)
@@ -253,7 +255,27 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 				}
 			}
 		}
-		
+
+		// Process voice/audio attachments (transcription)
+		if (normalized.attachments) {
+			for (const attachment of normalized.attachments) {
+				if (isVoiceAttachment(attachment)) {
+					try {
+						const transcriptText = await processVoiceAttachment(bot, attachment)
+						normalized.text = normalized.text
+							? `${transcriptText}\n\n${normalized.text}`
+							: transcriptText
+					} catch (err) {
+						const errMsg = err instanceof Error ? err.message : 'unknown error'
+						void logToFile('error', 'voice transcription failed', { fileId: attachment.fileId, error: errMsg })
+						normalized.text = normalized.text
+							? `[Voice note - transcription failed: ${errMsg}]\n\n${normalized.text}`
+							: `[Voice note - transcription failed: ${errMsg}]`
+					}
+				}
+			}
+		}
+
 		broadcast({ type: 'message.received', payload: normalized })
 	})
 
@@ -269,9 +291,14 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 	void bot.start()
 
 	const notifyRestart = async () => {
-		if (lastActiveChatId) {
+		// Use allowedChatIds from config, or fall back to lastActiveChatId
+		const chatIds = config.allowedChatIds?.length 
+			? config.allowedChatIds 
+			: lastActiveChatId ? [lastActiveChatId] : []
+		
+		for (const chatId of chatIds) {
 			try {
-				await bot.api.sendMessage(lastActiveChatId, '🔄 Gateway restarted')
+				await bot.api.sendMessage(chatId, '🔄 Gateway restarted')
 			} catch {
 				// ignore errors during restart notification
 			}

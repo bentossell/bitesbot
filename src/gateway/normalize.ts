@@ -9,8 +9,30 @@ const resolveAttachments = (message: Message): Attachment[] | undefined => {
 		attachments.push({ type: 'photo', fileId: largest.file_id })
 	}
 
+	if ('voice' in message && message.voice) {
+		attachments.push({
+			type: 'voice',
+			fileId: message.voice.file_id,
+			duration: message.voice.duration,
+			mimeType: message.voice.mime_type,
+		})
+	}
+
+	if ('audio' in message && message.audio) {
+		attachments.push({
+			type: 'audio',
+			fileId: message.audio.file_id,
+			duration: message.audio.duration,
+			mimeType: message.audio.mime_type,
+		})
+	}
+
 	if ('document' in message && message.document) {
-		attachments.push({ type: 'document', fileId: message.document.file_id })
+		attachments.push({
+			type: 'document',
+			fileId: message.document.file_id,
+			mimeType: message.document.mime_type,
+		})
 	}
 
 	return attachments.length ? attachments : undefined

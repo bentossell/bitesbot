@@ -7,7 +7,8 @@ import {
 	type SessionStore,
 	type BridgeEvent,
 } from './jsonl-session.js'
-import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
+import { createPersistentSessionStore, setWorkspaceDir, type PersistentSessionStore } from './session-store.js'
+import { syncSessionToMemory } from './memory-sync.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
 import { logToFile } from '../logging/file.js'
 
@@ -30,15 +31,19 @@ type CommandResult =
 	| { handled: true; response: string }
 	| { handled: true; response: string; async: true }
 
-const parseCommand = async (
-	text: string,
-	chatId: number | string,
-	manifests: Map<string, CLIManifest>,
-	defaultCli: string,
-	sessionStore: SessionStore,
-	cronService?: CronService,
+type ParseCommandOptions = {
+	text: string
+	chatId: number | string
+	manifests: Map<string, CLIManifest>
+	defaultCli: string
+	sessionStore: SessionStore
+	workingDirectory: string
+	cronService?: CronService
 	persistentStore?: PersistentSessionStore
-): Promise<CommandResult> => {
+}
+
+const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> => {
+	const { text, chatId, manifests, defaultCli, sessionStore, workingDirectory, cronService, persistentStore } = opts
 	const trimmed = text.trim()
 
 	if (trimmed.startsWith('/use ')) {
@@ -57,12 +62,22 @@ const parseCommand = async (
 	}
 
 	if (trimmed === '/new') {
+		// Sync session to memory before clearing
+		try {
+			const result = await syncSessionToMemory(workingDirectory)
+			if (result.written) {
+				console.log(`[jsonl-bridge] Synced ${result.entries} messages to memory`)
+			}
+		} catch (err) {
+			console.error('[jsonl-bridge] Failed to sync memory on /new:', err)
+		}
+		
 		const session = sessionStore.get(chatId)
 		if (session) {
 			session.terminate()
 			sessionStore.delete(chatId)
 		}
-		return { handled: true, response: 'Session cleared. Next message starts fresh.' }
+		return { handled: true, response: '💾 Session saved to memory. Starting fresh.' }
 	}
 
 	if (trimmed === '/stop') {
@@ -230,6 +245,16 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	
 	console.log(`[jsonl-bridge] Loaded ${persistentStore.resumeTokens.size} resume tokens`)
 
+	// Sync session logs to memory on startup (gateway restart)
+	try {
+		const result = await syncSessionToMemory(config.workingDirectory)
+		if (result.written) {
+			console.log(`[jsonl-bridge] Synced ${result.entries} messages to memory on startup`)
+		}
+	} catch (err) {
+		console.error('[jsonl-bridge] Failed to sync memory on startup:', err)
+	}
+
 	const wsUrl = config.gatewayUrl.replace(/^http/, 'ws')
 	const wsEndpoint = wsUrl.endsWith('/events') ? wsUrl : `${wsUrl}/events`
 
@@ -274,15 +299,16 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Received from ${chatId}: "${prompt.slice(0, 50)}..."`)
 
-		const cmdResult = await parseCommand(
-			prompt,
+		const cmdResult = await parseCommand({
+			text: prompt,
 			chatId,
 			manifests,
-			config.defaultCli,
+			defaultCli: config.defaultCli,
 			sessionStore,
+			workingDirectory: config.workingDirectory,
 			cronService,
-			persistentStore
-		)
+			persistentStore,
+		})
 		if (cmdResult.handled) {
 			console.log(`[jsonl-bridge] Command handled: ${text}`)
 			await send(chatId, cmdResult.response)

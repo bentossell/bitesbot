@@ -1,6 +1,6 @@
 import { loadConfig } from '../gateway/config.js'
 import { startGatewayServer } from '../gateway/server.js'
-import { startBridge, type BridgeHandle } from '../bridge/index.js'
+import { startBridge, type BridgeHandle, setWorkspaceDir } from '../bridge/index.js'
 import { removePidFile, writePidFile } from './pid.js'
 
 export type RunOptions = {
@@ -22,6 +22,9 @@ export const runGateway = async (options: RunOptions = {}) => {
 	let bridge: BridgeHandle | undefined
 
 	if (config.bridge.enabled) {
+		// Set workspace directory for session storage
+		setWorkspaceDir(config.bridge.workingDirectory)
+		
 		const gatewayUrl = `http://${config.host}:${config.port}`
 		bridge = await startBridge({
 			gatewayUrl,

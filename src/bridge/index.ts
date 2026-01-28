@@ -12,3 +12,4 @@ export {
 	type BridgeConfig as BridgeStartConfig,
 	type BridgeHandle,
 } from './jsonl-bridge.js'
+export { setWorkspaceDir } from './session-store.js'

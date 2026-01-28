@@ -1,8 +1,10 @@
 export const PROTOCOL_VERSION = 1
 
 export type Attachment = {
-	type: 'photo' | 'document'
+	type: 'photo' | 'document' | 'voice' | 'audio'
 	fileId: string
+	duration?: number // seconds for voice/audio
+	mimeType?: string
 	localPath?: string // Populated after download
 }
 
