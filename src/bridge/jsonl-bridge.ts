@@ -19,6 +19,11 @@ import {
 	formatPendingResultsForInjection,
 } from './subagent-registry.js'
 import {
+	CommandLane,
+	enqueueCommandInLane,
+	initDefaultLanes,
+} from './command-queue.js'
+import {
 	parseSpawnCommand,
 	parseSubagentsCommand,
 	formatSubagentList,
@@ -867,62 +872,73 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 	})
 
 	const displayName = label || `Subagent #${record.runId.slice(0, 8)}`
+	// Send spawn confirmation immediately - subagent runs in background
 	await send(chatId, `🚀 Spawned: ${displayName}\n   CLI: ${cliName}\n   Task: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''}`)
 
 	console.log(`[jsonl-bridge] Spawning subagent ${record.runId} with ${cliName}: "${task.slice(0, 50)}..."`)
 
-	// Create a new session for the subagent (no resume - fresh context)
-	const session = new JsonlSession(`subagent-${record.runId}`, manifest, workingDirectory)
+	// Run subagent in background on the Subagent lane (fire-and-forget)
+	void enqueueCommandInLane(CommandLane.Subagent, async () => {
+		// Create a new session for the subagent (marked as subagent, no resume - fresh context)
+		const session = new JsonlSession(`subagent-${record.runId}`, manifest, workingDirectory, { isSubagent: true })
 
-	let lastText = ''
+		let lastText = ''
 
-	session.on('event', (evt: BridgeEvent) => {
-		switch (evt.type) {
-			case 'started':
-				subagentRegistry.markRunning(record.runId, evt.sessionId)
-				console.log(`[jsonl-bridge] Subagent ${record.runId} started: ${evt.sessionId}`)
-				break
+		return new Promise<void>((resolve) => {
+			session.on('event', (evt: BridgeEvent) => {
+				switch (evt.type) {
+					case 'started':
+						subagentRegistry.markRunning(record.runId, evt.sessionId)
+						console.log(`[jsonl-bridge] Subagent ${record.runId} started: ${evt.sessionId}`)
+						break
 
-			case 'text':
-				if (evt.text) {
-					lastText = evt.text
+					case 'text':
+						if (evt.text) {
+							lastText = evt.text
+						}
+						break
+
+					case 'completed':
+						console.log(`[jsonl-bridge] Subagent ${record.runId} completed`)
+						subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
+						// Announce completion
+						void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
+						// Prune old runs and persist
+						subagentRegistry.prune(chatId)
+						void saveSubagentRegistry()
+						break
+
+					case 'error':
+						console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
+						subagentRegistry.markError(record.runId, evt.message)
+						void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
+						void saveSubagentRegistry()
+						break
 				}
-				break
+			})
 
-			case 'completed':
-				console.log(`[jsonl-bridge] Subagent ${record.runId} completed`)
-				subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
-				// Announce completion
-				void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
-				// Prune old runs and persist
-				subagentRegistry.prune(chatId)
-				void saveSubagentRegistry()
-				break
+			session.on('exit', (code) => {
+				console.log(`[jsonl-bridge] Subagent ${record.runId} exited with code ${code}`)
+				// If exited without completing, mark as error
+				const current = subagentRegistry.get(record.runId)
+				if (current && current.status === 'running') {
+					subagentRegistry.markError(record.runId, `Process exited with code ${code}`)
+					void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
+				}
+				resolve()
+			})
 
-			case 'error':
-				console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
-				subagentRegistry.markError(record.runId, evt.message)
-				void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
-				void saveSubagentRegistry()
-				break
-		}
+			// Run the subagent (no resume token - fresh session)
+			session.run(task)
+		})
 	})
-
-	session.on('exit', (code) => {
-		console.log(`[jsonl-bridge] Subagent ${record.runId} exited with code ${code}`)
-		// If exited without completing, mark as error
-		const current = subagentRegistry.get(record.runId)
-		if (current && current.status === 'running') {
-			subagentRegistry.markError(record.runId, `Process exited with code ${code}`)
-			void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
-		}
-	})
-
-	// Run the subagent (no resume token - fresh session)
-	session.run(task)
 }
 
 export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> => {
+	// Initialize lane-based command queue with default concurrency
+	initDefaultLanes()
+	console.log('[jsonl-bridge] Initialized command lanes (Main: 1, Subagent: 4, Cron: 1)')
+
 	const manifests = await loadAllManifests(config.adaptersDir)
 	if (manifests.size === 0) {
 		console.warn('[jsonl-bridge] No CLI adapters found in', config.adaptersDir)

@@ -52,6 +52,7 @@ export type SessionInfo = {
 	state: SessionState
 	lastActivity: Date
 	resumeToken?: ResumeToken
+	isSubagent?: boolean
 }
 
 export type JsonlSessionEvents = {
@@ -63,6 +64,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	readonly id: string
 	readonly chatId: number | string
 	readonly cli: string
+	readonly isSubagent: boolean
 	private process: ChildProcess | null = null
 	private readline: Interface | null = null
 	private _state: SessionState = 'suspended'
@@ -74,12 +76,14 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	constructor(
 		chatId: number | string,
 		private manifest: CLIManifest,
-		private workingDir: string
+		private workingDir: string,
+		options?: { isSubagent?: boolean }
 	) {
 		super()
 		this.id = `${chatId}-${Date.now()}`
 		this.chatId = chatId
 		this.cli = manifest.name
+		this.isSubagent = options?.isSubagent ?? false
 	}
 
 	get state(): SessionState {
@@ -102,6 +106,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			state: this._state,
 			lastActivity: this._lastActivity,
 			resumeToken: this._resumeToken,
+			isSubagent: this.isSubagent,
 		}
 	}
 
@@ -423,7 +428,11 @@ export const createSessionStore = (): SessionStore => {
 		setResumeToken: (chatId, cli, token) => resumeTokens.set(`${chatId}:${cli}`, token),
 		getActiveCli: (chatId) => activeCli.get(chatId),
 		setActiveCli: (chatId, cli) => activeCli.set(chatId, cli),
-		isBusy: (chatId) => sessions.has(chatId),
+		// Only main sessions (not subagents) block the chat
+		isBusy: (chatId) => {
+			const session = sessions.get(chatId)
+			return session !== undefined && !session.isSubagent
+		},
 		enqueue: (chatId, msg) => {
 			const queue = messageQueue.get(chatId) || []
 			queue.push(msg)
