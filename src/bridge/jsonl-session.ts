@@ -346,10 +346,18 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	}
 }
 
+export type QueuedMessage = {
+	id: string
+	text: string
+	attachments?: Array<{ localPath?: string }>
+	createdAt: number
+}
+
 export type SessionStore = {
 	sessions: Map<number | string, JsonlSession>
 	resumeTokens: Map<string, ResumeToken> // key: `${chatId}:${cli}`
 	activeCli: Map<number | string, string> // tracks which CLI is active per chat
+	messageQueue: Map<number | string, QueuedMessage[]> // queued messages per chat
 	get: (chatId: number | string) => JsonlSession | undefined
 	set: (session: JsonlSession) => void
 	delete: (chatId: number | string) => void
@@ -357,17 +365,23 @@ export type SessionStore = {
 	setResumeToken: (chatId: number | string, cli: string, token: ResumeToken) => void
 	getActiveCli: (chatId: number | string) => string | undefined
 	setActiveCli: (chatId: number | string, cli: string) => void
+	isBusy: (chatId: number | string) => boolean
+	enqueue: (chatId: number | string, msg: QueuedMessage) => void
+	dequeue: (chatId: number | string) => QueuedMessage | undefined
+	getQueueLength: (chatId: number | string) => number
 }
 
 export const createSessionStore = (): SessionStore => {
 	const sessions = new Map<number | string, JsonlSession>()
 	const resumeTokens = new Map<string, ResumeToken>()
 	const activeCli = new Map<number | string, string>()
+	const messageQueue = new Map<number | string, QueuedMessage[]>()
 
 	return {
 		sessions,
 		resumeTokens,
 		activeCli,
+		messageQueue,
 		get: (chatId) => sessions.get(chatId),
 		set: (session) => sessions.set(session.chatId, session),
 		delete: (chatId) => sessions.delete(chatId),
@@ -375,5 +389,19 @@ export const createSessionStore = (): SessionStore => {
 		setResumeToken: (chatId, cli, token) => resumeTokens.set(`${chatId}:${cli}`, token),
 		getActiveCli: (chatId) => activeCli.get(chatId),
 		setActiveCli: (chatId, cli) => activeCli.set(chatId, cli),
+		isBusy: (chatId) => sessions.has(chatId),
+		enqueue: (chatId, msg) => {
+			const queue = messageQueue.get(chatId) || []
+			queue.push(msg)
+			messageQueue.set(chatId, queue)
+		},
+		dequeue: (chatId) => {
+			const queue = messageQueue.get(chatId)
+			if (!queue || queue.length === 0) return undefined
+			const msg = queue.shift()
+			if (queue.length === 0) messageQueue.delete(chatId)
+			return msg
+		},
+		getQueueLength: (chatId) => messageQueue.get(chatId)?.length ?? 0,
 	}
 }
