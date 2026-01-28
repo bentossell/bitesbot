@@ -609,12 +609,17 @@ const runNativeSpecMode = async (opts: NativeSpecModeOptions): Promise<void> => 
 				
 				// If we didn't get a spec_plan event, the agent might have output the plan as text
 				const specState = getSpecMode(chatId)
-				if (specState && !specState.pendingPlan && evt.answer) {
-					// Treat the final answer as the plan
-					setPendingPlan(chatId, evt.answer)
-					
-					const planMessage = `📋 **Implementation Plan**\n\n${evt.answer}\n\n---\nReply with "proceed", "yes", or similar to execute. Reply with "cancel" to abort. Or send feedback to refine the plan.`
-					await send(chatId, planMessage)
+				if (specState && !specState.pendingPlan) {
+					if (evt.answer) {
+						// Treat the final answer as the plan
+						setPendingPlan(chatId, evt.answer)
+						
+						const planMessage = `📋 **Implementation Plan**\n\n${evt.answer}\n\n---\nReply with "proceed", "yes", or similar to execute. Reply with "cancel" to abort. Or send feedback to refine the plan.`
+						await send(chatId, planMessage)
+					} else {
+						clearSpecMode(chatId)
+						await send(chatId, '⚠️ Spec mode ended without a plan. Try /spec again.')
+					}
 				}
 				break
 			}
@@ -631,6 +636,10 @@ const runNativeSpecMode = async (opts: NativeSpecModeOptions): Promise<void> => 
 		stopTypingLoop()
 		console.log(`[jsonl-bridge] Spec mode session exited with code ${code}`)
 		sessionStore.delete(chatId)
+		const specState = getSpecMode(chatId)
+		if (specState && !specState.pendingPlan) {
+			clearSpecMode(chatId)
+		}
 	})
 
 	// Run with spec mode enabled (no resume for fresh planning)
