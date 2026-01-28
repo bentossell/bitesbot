@@ -155,7 +155,9 @@ export const startGatewayServer = async (config: GatewayConfig, options: Gateway
 		await bot.api.setMyCommands([
 			{ command: 'new', description: 'Start fresh session' },
 			{ command: 'stop', description: 'Stop current session' },
+			{ command: 'interrupt', description: 'Skip current task, keep queue' },
 			{ command: 'status', description: 'Show session status' },
+			{ command: 'model', description: 'Switch AI model (opus/sonnet/haiku)' },
 			{ command: 'use', description: 'Switch CLI (claude/droid)' },
 			{ command: 'stream', description: 'Toggle streaming output' },
 			{ command: 'verbose', description: 'Toggle tool output' },
