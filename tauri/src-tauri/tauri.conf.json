@@ -1,0 +1,19 @@
+{
+	"productName": "BitesBot",
+	"version": "0.1.0",
+	"build": {
+		"beforeDevCommand": "npm run dev --prefix ui",
+		"beforeBuildCommand": "npm run build --prefix ui",
+		"devPath": "http://localhost:5173",
+		"distDir": "../ui/dist"
+	},
+	"app": {
+		"windows": [
+			{
+				"title": "BitesBot",
+				"width": 1024,
+				"height": 720
+			}
+		]
+	}
+}

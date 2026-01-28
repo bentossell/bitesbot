@@ -13,6 +13,7 @@ import { normalizeMessage } from './normalize.js'
 import { toTelegramMarkdown } from './telegram-markdown.js'
 import { logToFile } from '../logging/file.js'
 import { isVoiceAttachment, processVoiceAttachment } from './media.js'
+import { createWizardRpc } from './wizard-rpc.js'
 import type {
 	GatewayEvent,
 	HealthResponse,
@@ -126,6 +127,9 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 	let botInfo: Awaited<ReturnType<typeof bot.api.getMe>> | undefined
 	const activeChats = new Set<number>()
 	let lastActiveChatId: number | undefined
+	const handleWizardRpc = createWizardRpc({
+		getLastActiveChatId: () => lastActiveChatId,
+	})
 
 	try {
 		botInfo = await bot.api.getMe()
@@ -151,6 +155,10 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 		}
 
 		const path = resolvePath(req)
+		if (path.startsWith('/wizard')) {
+			await handleWizardRpc(req, res)
+			return
+		}
 		if (req.method === 'GET' && path === '/health') {
 			const payload: HealthResponse = { ok: true, version: PROTOCOL_VERSION }
 			sendJson(res, 200, payload)
