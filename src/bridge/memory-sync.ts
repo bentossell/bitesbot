@@ -53,7 +53,6 @@ const formatSessionSummary = (entries: SessionLogEntry[]): string => {
 	
 	for (const entry of entries) {
 		const entryTime = new Date(entry.timestamp)
-		const timeStr = entryTime.toISOString().split('T')[1]?.split('.')[0] || ''
 		
 		// Start new section if gap > 30 mins
 		if (lastTimestamp) {

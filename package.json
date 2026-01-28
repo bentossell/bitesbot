@@ -5,7 +5,8 @@
 	"description": "Portable Telegram gateway for CLI agents",
 	"bin": {
 		"tg-gateway": "dist/daemon/cli.js",
-		"tg-links": "dist/workspace/links-cli.js"
+		"tg-links": "dist/workspace/links-cli.js",
+		"tg-concepts": "dist/workspace/concepts-cli.js"
 	},
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

@@ -1,6 +1,6 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { expandHome, getRelativePath } from './path-utils.js';
 
 export interface WikiLink {
   term: string;
@@ -15,13 +15,6 @@ export interface LinkTarget {
 }
 
 const LINK_PATTERN = /\[\[([^\]]+)\]\]/g;
-
-export function expandHome(path: string): string {
-  if (path.startsWith('~/')) {
-    return join(homedir(), path.slice(2));
-  }
-  return path;
-}
 
 export async function extractLinksFromMarkdown(
   filePath: string,
@@ -68,7 +61,7 @@ export async function scanWorkspaceForLinks(
           allLinks.push(...links);
         }
       }
-    } catch (error) {
+    } catch {
       // Skip directories we can't read
     }
   }
@@ -139,10 +132,4 @@ export async function resolveAllLinks(
   return resolved;
 }
 
-export function getRelativePath(filePath: string, workspaceDir: string): string {
-  const expandedDir = expandHome(workspaceDir);
-  if (filePath.startsWith(expandedDir)) {
-    return filePath.slice(expandedDir.length + 1);
-  }
-  return filePath;
-}
+export { expandHome, getRelativePath };

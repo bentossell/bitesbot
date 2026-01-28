@@ -5,6 +5,7 @@ import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { spawn } from 'node:child_process'
+import type { ReadableStream } from 'node:stream/web'
 import type { Bot } from 'grammy'
 import type { Attachment } from '../protocol/types.js'
 
@@ -44,7 +45,8 @@ export const downloadTelegramFile = async (
 	}
 
 	const writeStream = createWriteStream(localPath)
-	await pipeline(Readable.fromWeb(response.body as any), writeStream)
+	const webStream = response.body as ReadableStream<Uint8Array>
+	await pipeline(Readable.fromWeb(webStream), writeStream)
 
 	return localPath
 }

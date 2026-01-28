@@ -7,7 +7,6 @@ import {
 	createSessionStore,
 	type SessionStore,
 	type BridgeEvent,
-	type QueuedMessage,
 } from './jsonl-session.js'
 import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
 import { syncSessionToMemory } from './memory-sync.js'
@@ -15,7 +14,6 @@ import { CronService, parseScheduleArg } from '../cron/index.js'
 import { logToFile } from '../logging/file.js'
 import {
 	subagentRegistry,
-	type SubagentRunRecord,
 	saveSubagentRegistry,
 	loadSubagentRegistry,
 	formatPendingResultsForInjection,
@@ -33,6 +31,17 @@ import {
 	removePendingPlan,
 	formatPlanForDisplay,
 } from './plan-approval-store.js'
+import { createConceptsIndex, getRelatedFilesForTerms } from '../workspace/concepts-index.js'
+import {
+	extractConceptsFromText,
+	getRepoNames,
+	loadConceptConfig,
+	normalizeConcept,
+	normalizeConceptConfig,
+	normalizeConceptToken,
+	saveConceptConfig,
+} from '../workspace/concepts.js'
+import { getRelativePath } from '../workspace/path-utils.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -156,6 +165,144 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		const newValue = trimmed === '/verbose off' ? false : trimmed === '/verbose on' ? true : !current.verbose
 		await persistentStore.setChatSettings(chatId, { verbose: newValue })
 		return { handled: true, response: `Verbose ${newValue ? 'enabled' : 'disabled'}. Tool ${newValue ? 'names and outputs will be shown' : 'details hidden'}.` }
+	}
+
+	if (trimmed.startsWith('/concepts')) {
+		const term = trimmed.replace('/concepts', '').trim()
+		if (!term) {
+			return { handled: true, response: 'Usage: /concepts <term>' }
+		}
+
+		const manager = createConceptsIndex(workingDirectory)
+		const index = await manager.loadIndex()
+		if (!index) {
+			return { handled: true, response: 'No concepts index found. Run "tg-concepts rebuild" on the server.' }
+		}
+
+		const config = await loadConceptConfig(manager.getConfigDir())
+		const normalizedConfig = normalizeConceptConfig(config)
+		const canonical = normalizeConcept(term, normalizedConfig)
+		if (!canonical) {
+			return { handled: true, response: `No concept found for "${term}".` }
+		}
+
+		const entry = index.concepts[canonical]
+		if (!entry) {
+			return { handled: true, response: `No concept found for "${canonical}".` }
+		}
+
+		const mentions = entry.mentions.slice(0, 20)
+		const remaining = entry.mentions.length - mentions.length
+		const lines = mentions.map(mention => `- ${mention.file} (${mention.count})`)
+		if (remaining > 0) {
+			lines.push(`...and ${remaining} more`)
+		}
+		return { handled: true, response: [`Files mentioning "${canonical}":`, ...lines].join('\n') }
+	}
+
+	if (trimmed.startsWith('/related')) {
+		const term = trimmed.replace('/related', '').trim()
+		if (!term) {
+			return { handled: true, response: 'Usage: /related <term>' }
+		}
+
+		const manager = createConceptsIndex(workingDirectory)
+		const index = await manager.loadIndex()
+		if (!index) {
+			return { handled: true, response: 'No concepts index found. Run "tg-concepts rebuild" on the server.' }
+		}
+
+		const config = await loadConceptConfig(manager.getConfigDir())
+		const normalizedConfig = normalizeConceptConfig(config)
+		const canonical = normalizeConcept(term, normalizedConfig)
+		if (!canonical) {
+			return { handled: true, response: `No concept found for "${term}".` }
+		}
+
+		const entry = index.concepts[canonical]
+		if (!entry) {
+			return { handled: true, response: `No concept found for "${canonical}".` }
+		}
+
+		const relatedEntries = Object.entries(entry.related).slice(0, 10)
+		const relatedLines = relatedEntries.map(([related, score]) => `- ${related} (${score})`)
+		const relatedFiles = getRelatedFilesForTerms(index, [canonical], 5)
+		const fileLines = relatedFiles.map(file => `- ${file}`)
+		const responseLines = [`Related concepts for "${canonical}":`]
+		if (relatedLines.length > 0) {
+			responseLines.push(...relatedLines)
+		} else {
+			responseLines.push('(none)')
+		}
+		if (fileLines.length > 0) {
+			responseLines.push('', 'Related files:', ...fileLines)
+		}
+		return { handled: true, response: responseLines.join('\n') }
+	}
+
+	if (trimmed.startsWith('/file')) {
+		const filePath = trimmed.replace('/file', '').trim()
+		if (!filePath) {
+			return { handled: true, response: 'Usage: /file <path>' }
+		}
+
+		const manager = createConceptsIndex(workingDirectory)
+		const index = await manager.loadIndex()
+		if (!index) {
+			return { handled: true, response: 'No concepts index found. Run "tg-concepts rebuild" on the server.' }
+		}
+
+		const relative = getRelativePath(filePath, workingDirectory)
+		const entry = index.files[relative]
+		if (!entry) {
+			return { handled: true, response: `No concepts found for "${relative}".` }
+		}
+
+		const lines = entry.concepts.map(concept => `- ${concept}`)
+		return { handled: true, response: [`Concepts in ${relative}:`, ...lines].join('\n') }
+	}
+
+	if (trimmed.startsWith('/aliases')) {
+		const args = trimmed.replace('/aliases', '').trim()
+		const manager = createConceptsIndex(workingDirectory)
+		const config = await loadConceptConfig(manager.getConfigDir())
+		const normalizedConfig = normalizeConceptConfig(config)
+
+		if (args === '' || args === 'list') {
+			const entries = Object.entries(config.aliases ?? {}).sort((a, b) => a[0].localeCompare(b[0]))
+			if (entries.length === 0) {
+				return { handled: true, response: 'No aliases configured.' }
+			}
+			const lines = entries.map(([alias, canonical]) => `- ${alias} -> ${canonical}`)
+			return { handled: true, response: ['Aliases:', ...lines].join('\n') }
+		}
+
+		const addMatch = args.match(/^add\s+(\S+)\s+(.+)$/)
+		if (addMatch) {
+			const normalizedAlias = normalizeConceptToken(addMatch[1])
+			const normalizedCanonical = normalizeConceptToken(addMatch[2])
+			if (!normalizedAlias || !normalizedCanonical) {
+				return { handled: true, response: 'Alias and canonical terms must be non-empty.' }
+			}
+			const canonical = normalizeConcept(addMatch[2], normalizedConfig) ?? normalizedCanonical
+			config.aliases = config.aliases ?? {}
+			config.aliases[normalizedAlias] = canonical
+			await saveConceptConfig(config, manager.getConfigDir())
+			return { handled: true, response: `Added alias: ${normalizedAlias} -> ${canonical}` }
+		}
+
+		const removeMatch = args.match(/^remove\s+(\S+)$/)
+		if (removeMatch) {
+			const normalizedAlias = normalizeConceptToken(removeMatch[1])
+			if (!normalizedAlias || !config.aliases || !config.aliases[normalizedAlias]) {
+				return { handled: true, response: `Alias not found: ${removeMatch[1]}` }
+			}
+			delete config.aliases[normalizedAlias]
+			await saveConceptConfig(config, manager.getConfigDir())
+			return { handled: true, response: `Removed alias: ${normalizedAlias}` }
+		}
+
+	return { handled: true, response: 'Usage: /aliases list | /aliases add <alias> <canonical> | /aliases remove <alias>' }
 	}
 
 	// /spec command - create plan for approval
@@ -622,6 +769,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const persistentStore = await createPersistentSessionStore()
 	const cronService = new CronService()
 	await cronService.start()
+	const conceptsIndex = createConceptsIndex(config.workingDirectory)
+	const repoNames = await getRepoNames(config.workingDirectory)
 	
 	console.log(`[jsonl-bridge] Loaded ${persistentStore.resumeTokens.size} resume tokens`)
 
@@ -639,6 +788,26 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		}
 	} catch (err) {
 		console.error('[jsonl-bridge] Failed to sync memory on startup:', err)
+	}
+
+	const buildRelatedContext = async (text: string): Promise<string | null> => {
+		try {
+			const index = await conceptsIndex.loadIndex()
+			if (!index) return null
+
+			const conceptConfig = await loadConceptConfig(conceptsIndex.getConfigDir())
+			const terms = extractConceptsFromText(text, conceptConfig, repoNames)
+			if (terms.length === 0) return null
+
+			const relatedFiles = getRelatedFilesForTerms(index, terms, 5)
+			if (relatedFiles.length === 0) return null
+
+			return `Related files:\n${relatedFiles.map(file => `- ${file}`).join('\n')}`
+		} catch (err) {
+			const message = err instanceof Error ? err.message : 'unknown error'
+			console.error('[jsonl-bridge] Failed to build related context:', message)
+			return null
+		}
 	}
 
 	const wsUrl = config.gatewayUrl.replace(/^http/, 'ws')
@@ -660,8 +829,9 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	// Track the primary chat for cron job delivery
 	let primaryChatId: number | string | null = null
 
-	const processMessage = async (chatId: number | string, prompt: string, attachments?: IncomingMessage['attachments']) => {
+	const processMessage = async (chatId: number | string, prompt: string) => {
 		const t0 = Date.now()
+		const originalPrompt = prompt
 
 		// Use active CLI for this chat, or default (check persistent store first)
 		const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
@@ -673,8 +843,13 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			console.log(`[jsonl-bridge] Injected subagent results into prompt`)
 		}
 
+		const relatedContext = await buildRelatedContext(originalPrompt)
+		if (relatedContext) {
+			prompt = `${prompt}\n\n${relatedContext}`
+		}
+
 		// Log user message
-		void persistentStore.logMessage(chatId, 'user', prompt, undefined, cliName)
+		void persistentStore.logMessage(chatId, 'user', originalPrompt, undefined, cliName)
 		const manifest = manifests.get(cliName)
 		if (!manifest) {
 			console.log(`[jsonl-bridge] CLI '${cliName}' not found`)
@@ -831,7 +1006,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const next = sessionStore.dequeue(chatId)
 		if (!next) return
 		console.log(`[jsonl-bridge] Flushing queued message for ${chatId}`)
-		await processMessage(chatId, next.text, next.attachments as IncomingMessage['attachments'])
+		await processMessage(chatId, next.text)
 	}
 
 	const handleMessage = async (message: IncomingMessage) => {
@@ -928,7 +1103,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			return
 		}
 
-		await processMessage(chatId, prompt, attachments)
+		await processMessage(chatId, prompt)
 	}
 
 	const handleCallbackQuery = async (query: CallbackQuery) => {

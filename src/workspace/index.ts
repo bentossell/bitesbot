@@ -1,12 +1,10 @@
 export {
   WikiLink,
   LinkTarget,
-  expandHome,
   extractLinksFromMarkdown,
   scanWorkspaceForLinks,
   resolveLink,
   resolveAllLinks,
-  getRelativePath,
 } from './links.js';
 
 export {
@@ -15,3 +13,27 @@ export {
   LinksIndexManager,
   createLinksIndex,
 } from './links-index.js';
+
+export {
+  ConceptConfig,
+  NormalizedConceptConfig,
+  normalizeConceptConfig,
+  normalizeConceptToken,
+  normalizeConcept,
+  loadConceptConfig,
+  saveConceptConfig,
+  extractConceptsFromText,
+  scanWorkspaceForMarkdown,
+  getRepoNames,
+} from './concepts.js';
+
+export {
+  ConceptMention,
+  ConceptEntry,
+  ConceptsIndex,
+  ConceptsIndexManager,
+  createConceptsIndex,
+  getRelatedFilesForTerms,
+} from './concepts-index.js';
+
+export { expandHome, getRelativePath } from './path-utils.js';

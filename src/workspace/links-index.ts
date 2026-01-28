@@ -2,7 +2,6 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import {
-  WikiLink,
   LinkTarget,
   scanWorkspaceForLinks,
   resolveAllLinks,
