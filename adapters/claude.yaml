@@ -11,3 +11,6 @@ resume:
 model:
   flag: --model
   default: sonnet
+
+specMode:
+  flag: --permission-mode plan

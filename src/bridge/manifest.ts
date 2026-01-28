@@ -52,6 +52,10 @@ export type ModelConfig = {
 	default: string
 }
 
+export type SpecModeConfig = {
+	flag: string // e.g., '--use-spec' for droid, '--permission-mode plan' for claude
+}
+
 export type CLIManifest = {
 	name: string
 	command: string
@@ -60,6 +64,7 @@ export type CLIManifest = {
 	workingDirFlag?: string
 	resume?: ResumeConfig
 	model?: ModelConfig
+	specMode?: SpecModeConfig
 }
 
 const validateManifest = (data: unknown, filename: string): CLIManifest => {
@@ -83,6 +88,7 @@ const validateManifest = (data: unknown, filename: string): CLIManifest => {
 		workingDirFlag: obj.workingDirFlag as string | undefined,
 		resume: obj.resume as ResumeConfig | undefined,
 		model: obj.model as ModelConfig | undefined,
+		specMode: obj.specMode as SpecModeConfig | undefined,
 	}
 }
 
