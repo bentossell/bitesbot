@@ -49,6 +49,13 @@ import {
 } from './spec-mode-store.js'
 import { buildMemoryRecall } from '../memory/recall.js'
 import type { MemoryConfig } from '../memory/types.js'
+import {
+	buildMemoryToolInstructions,
+	formatMemoryToolResultPrompt,
+	parseMemoryToolCall,
+	runMemoryTool,
+	type MemoryToolCall,
+} from '../memory/tools.js'
 import { createConceptsIndex, getRelatedFilesForTerms } from '../workspace/concepts-index.js'
 import {
 	extractConceptsFromText,
@@ -1207,8 +1214,9 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	}
 
 	type MessageContext = {
-		source?: 'user' | 'cron'
+		source?: 'user' | 'cron' | 'memory-tool'
 		cronJobId?: string
+		memoryToolDepth?: number
 	}
 
 	const processMessage = async (chatId: number | string, prompt: string, context?: MessageContext) => {
@@ -1232,6 +1240,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				if (memoryRecall) {
 					prompt = `${memoryRecall}\n\n${prompt}`
 				}
+				if (context?.source !== 'memory-tool') {
+					const memoryTools = buildMemoryToolInstructions()
+					prompt = `${memoryTools}\n\n${prompt}`
+				}
 			} catch (err) {
 				const message = err instanceof Error ? err.message : 'unknown error'
 				console.error('[jsonl-bridge] Failed to build memory recall:', message)
@@ -1244,7 +1256,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		}
 
 		// Log user message
-		void persistentStore.logMessage(chatId, 'user', originalPrompt, undefined, cliName)
+		const logRole = context?.source === 'memory-tool' ? 'system' : 'user'
+		void persistentStore.logMessage(chatId, logRole, originalPrompt, undefined, cliName)
 		const manifest = manifests.get(cliName)
 		if (!manifest) {
 			console.log(`[jsonl-bridge] CLI '${cliName}' not found`)
@@ -1411,7 +1424,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					}
 					break
 
-					case 'completed':
+					case 'completed': {
 						stopTypingLoop()
 						if (streamTimer) {
 							clearTimeout(streamTimer)
@@ -1425,21 +1438,46 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						if (getSettings().streaming) {
 							await flushStreamBuffer(true)
 						}
-					console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
-					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
-					void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
-					
-					// Send any files that were queued during streaming
-					for (const file of pendingFiles) {
-						console.log(`[jsonl-bridge] Sending queued file attachment: ${file.path}`)
-						const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
-						if (!sent) {
-							await send(chatId, `❌ Failed to send file: ${file.path}`)
+						console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
+						sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
+						void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
+
+						// Send any files that were queued during streaming
+						for (const file of pendingFiles) {
+							console.log(`[jsonl-bridge] Sending queued file attachment: ${file.path}`)
+							const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
+							if (!sent) {
+								await send(chatId, `❌ Failed to send file: ${file.path}`)
+							}
 						}
-					}
-					
-					if (evt.answer) {
-						void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
+
+						if (evt.answer) {
+							const toolDepth = context?.memoryToolDepth ?? 0
+							const shouldCheckTool =
+								config.memory?.enabled === true &&
+								!getSettings().streaming &&
+								toolDepth < 2
+							let toolCall: MemoryToolCall | null = null
+							if (shouldCheckTool) {
+								toolCall = parseMemoryToolCall(evt.answer)
+							}
+							if (toolCall) {
+								try {
+									const toolResult = await runMemoryTool(toolCall, config.memory as MemoryConfig)
+									const toolPrompt = formatMemoryToolResultPrompt(toolCall, toolResult, originalPrompt)
+									await processMessage(chatId, toolPrompt, {
+										...context,
+										source: 'memory-tool',
+										memoryToolDepth: toolDepth + 1,
+									})
+									break
+								} catch (err) {
+									const message = err instanceof Error ? err.message : 'unknown error'
+									console.error('[jsonl-bridge] Memory tool failed:', message)
+								}
+							}
+
+							void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
 						
 						// Extract and send any file attachments from the response (for non-streaming case)
 						const { files, remainingText } = extractSendfileCommands(evt.answer)
@@ -1486,6 +1524,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						await send(chatId, `💰 Cost: $${evt.cost.toFixed(4)}`)
 					}
 					break
+				}
 
 					case 'error':
 						stopTypingLoop()
