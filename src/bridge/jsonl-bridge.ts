@@ -87,6 +87,25 @@ type ParseCommandOptions = {
 	persistentStore?: PersistentSessionStore
 }
 
+const modelAliases: Record<string, string> = {
+	// Claude models
+	opus: 'claude-opus-4-5-20251101',
+	sonnet: 'claude-sonnet-4-5-20250929',
+	haiku: 'claude-haiku-4-5-20251001',
+	// OpenAI Codex models
+	codex: 'gpt-5.2',
+	'codex-max': 'gpt-5.1-codex-max',
+	// Gemini
+	gemini: 'gemini-3-pro-preview',
+	'gemini-flash': 'gemini-3-flash-preview',
+	// Pi (uses same model IDs as underlying providers)
+	pi: 'claude-sonnet-4-5-20250929',
+	'pi-opus': 'claude-opus-4-5-20251101',
+	'pi-haiku': 'claude-haiku-4-5-20251001',
+}
+
+export const resolveModelAlias = (alias: string): string => modelAliases[alias] || alias
+
 const parseSlashCommand = (text: string): { command: string; rest: string } | null => {
 	const trimmed = text.trim()
 	if (!trimmed.startsWith('/')) return null
@@ -124,24 +143,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		if (!arg) {
 			return { handled: true, response: 'Usage: /model <alias>\nAliases: opus, sonnet, haiku, codex, pi\nFull IDs also supported (e.g., claude-opus-4-5-20251101)' }
 		}
-		// Model alias mappings (based on CLI docs)
-		const modelAliases: Record<string, string> = {
-			// Claude models
-			opus: 'claude-opus-4-5-20251101',
-			sonnet: 'claude-sonnet-4-5-20250929',
-			haiku: 'claude-haiku-4-5-20251001',
-			// OpenAI Codex models
-			codex: 'gpt-5.2',
-			'codex-max': 'gpt-5.1-codex-max',
-			// Gemini
-			gemini: 'gemini-3-pro-preview',
-			'gemini-flash': 'gemini-3-flash-preview',
-			// Pi (uses same model IDs as underlying providers)
-			pi: 'claude-sonnet-4-5-20250929',
-			'pi-opus': 'claude-opus-4-5-20251101',
-			'pi-haiku': 'claude-haiku-4-5-20251001',
-		}
-		const modelId = modelAliases[arg] || arg
+		const modelId = resolveModelAlias(arg)
 		// Store model preference (will be passed to CLI on next session)
 		// Note: setChatSettings merges with existing settings, so this won't clobber streaming/verbose
 		if (persistentStore) {
