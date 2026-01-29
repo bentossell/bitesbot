@@ -192,6 +192,17 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: `__INTERRUPT__:⏭️ Task interrupted.${queueMsg}`, async: true }
 	}
 
+	// /restart - gracefully restart the gateway (launchd will respawn)
+	if (trimmed === '/restart') {
+		console.log('[jsonl-bridge] Restart requested via /restart command')
+		// Schedule exit after sending response (give time for message to be sent)
+		setTimeout(() => {
+			console.log('[jsonl-bridge] Exiting for restart...')
+			process.exit(0)
+		}, 500)
+		return { handled: true, response: '🔄 Restarting gateway...' }
+	}
+
 	if (trimmed === '/status') {
 		const session = sessionStore.get(chatId)
 		const currentCli = sessionStore.getActiveCli(chatId) || session?.cli || defaultCli
