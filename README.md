@@ -7,7 +7,7 @@ Portable Telegram gateway for CLI agents. Runs a Telegram bot, exposes HTTP and 
 1) Install dependencies:
 
 ```bash
-npm install
+pnpm install
 ```
 
 2) Configure the gateway (see `docs/configuration.md`). At minimum set:
@@ -17,8 +17,8 @@ npm install
 3) Build and run:
 
 ```bash
-npm run build
-npm run gateway:daemon
+pnpm run build
+pnpm run gateway:daemon
 ```
 
 4) Verify:
@@ -29,12 +29,12 @@ curl http://localhost:8787/health
 
 ## Commands
 
-- `npm run dev` - run the daemon in watch mode
-- `npm run gateway` - run the built gateway in the foreground
-- `npm run gateway:daemon` - run the gateway as a daemon
-- `npm run gateway:status` - check daemon status
-- `npm run gateway:stop` - stop the daemon
-- `npm run gateway:restart` - restart the daemon
+- `pnpm run dev` - run the daemon in watch mode
+- `pnpm run gateway` - run the built gateway in the foreground
+- `pnpm run gateway:daemon` - run the gateway as a daemon
+- `pnpm run gateway:status` - check daemon status
+- `pnpm run gateway:stop` - stop the daemon
+- `pnpm run gateway:restart` - restart the daemon
 
 ## CLI tools
 

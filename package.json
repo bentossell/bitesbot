@@ -29,6 +29,7 @@
 		"test:unit": "vitest run --exclude '**/*.e2e.ts'",
 		"test:e2e": "vitest run --config vitest.e2e.config.ts",
 		"test:integration": "vitest run --grep 'integration|e2e'",
+		"docs:check": "tsx scripts/docs-check.ts",
 		"telegram:session": "tsx scripts/telegram-session.ts",
 		"precommit": "pnpm run typecheck && pnpm run lint && pnpm run test:unit",
 		"prepare": "husky"

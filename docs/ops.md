@@ -11,9 +11,9 @@
 ## Launchd commands
 
 ```bash
-npm run gateway:daemon
-npm run gateway:stop
-npm run gateway:status
+pnpm run gateway:daemon
+pnpm run gateway:stop
+pnpm run gateway:status
 ```
 
 ## Port conflicts (EADDRINUSE)

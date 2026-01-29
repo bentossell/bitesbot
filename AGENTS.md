@@ -4,20 +4,20 @@
 
 ## Project Commands
 
-- Build: `npm run build`
-- Dev: `npm run dev`
-- Test all: `npm test`
-- Test single: `npm test -- -t "pattern"`
-- Lint: `npm run lint`
-- Type-check: `npm run typecheck`
+- Build: `pnpm run build`
+- Dev: `pnpm run dev`
+- Test all: `pnpm test`
+- Test single: `pnpm test -- -t "pattern"`
+- Lint: `pnpm run lint`
+- Type-check: `pnpm run typecheck`
 
 ## Gateway Commands
 
-- `npm run gateway` - Run gateway in foreground
-- `npm run gateway:daemon` - Run gateway as background daemon
-- `npm run gateway:stop` - Stop the daemon
-- `npm run gateway:status` - Check daemon status
-- `npm run gateway:restart` - Stop and restart daemon
+- `pnpm run gateway` - Run gateway in foreground
+- `pnpm run gateway:daemon` - Run gateway as background daemon
+- `pnpm run gateway:stop` - Stop the daemon
+- `pnpm run gateway:status` - Check daemon status
+- `pnpm run gateway:restart` - Stop and restart daemon
 
 ## Project Structure
 

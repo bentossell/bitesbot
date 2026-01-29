@@ -14,6 +14,8 @@ The bridge connects the gateway WebSocket stream to CLI agents. It manages sessi
 
 Adapter manifests live in `adapters/*.yaml` and define how to spawn each CLI. See `src/bridge/manifest.ts` for the schema.
 
+Current adapters: `claude`, `droid`, `codex`.
+
 Key fields:
 
 - `name` - adapter name, used by `/use`
@@ -31,11 +33,11 @@ Session and model:
 - `/stop` - stop the current session
 - `/interrupt` or `/skip` - stop current task, keep queue
 - `/status` - session state and settings
-- `/use <cli>` - switch adapter (e.g. `claude`, `droid`)
-- `/model <alias|id>` - set the model for the next session
+- `/use <cli>` - switch adapter (e.g. `claude`, `droid`, `codex`)
+- `/model <alias|id>` - set the model for the next session (aliases: `opus`, `sonnet`, `haiku`, `codex`, `codex-max`, `gemini`, `gemini-flash`)
 - `/stream` or `/stream on|off` - toggle streaming output
 - `/verbose` or `/verbose on|off` - toggle tool output
-- `/restart` - restart the gateway process
+- `/restart` or `/restart@<bot>` - restart the gateway process
 
 Concepts:
 

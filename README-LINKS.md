@@ -11,8 +11,8 @@ This feature enables automatic detection and indexing of `[[term]]` patterns in 
 After building the project:
 
 ```bash
-npm run build
-npm link  # Optional: to install globally
+pnpm run build
+pnpm link --global  # Optional: to install globally
 ```
 
 ## CLI Usage
