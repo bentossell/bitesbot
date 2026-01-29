@@ -37,6 +37,7 @@ export const runGateway = async (options: RunOptions = {}) => {
 			defaultCli: config.bridge.defaultCli,
 			workingDirectory: config.bridge.workingDirectory,
 			allowedChatIds: config.allowedChatIds,
+			memory: config.bridge.memory,
 		})
 		console.log('Bridge enabled, default CLI:', config.bridge.defaultCli)
 

@@ -55,7 +55,23 @@ import {
 	normalizeConceptToken,
 	saveConceptConfig,
 } from '../workspace/concepts.js'
-import { getRelativePath } from '../workspace/path-utils.js'
+import { createLinksIndex } from '../workspace/links-index.js'
+import { getRelativePath, expandHome } from '../workspace/path-utils.js'
+import { queryQmd, stripQmdPath } from '../workspace/qmd.js'
+import { basename } from 'node:path'
+
+export type BridgeMemoryConfig = {
+	enabled: boolean
+	qmdBin?: string
+	qmdIndex?: string
+	qmdCollection?: string
+	qmdLimit?: number
+	qmdMinScore?: number
+	qmdTimeoutMs?: number
+	maxSnippetChars?: number
+	maxLinks?: number
+	maxBacklinks?: number
+}
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -64,6 +80,7 @@ export type BridgeConfig = {
 	defaultCli: string
 	workingDirectory: string
 	allowedChatIds?: number[]
+	memory?: BridgeMemoryConfig
 }
 
 export type BridgeHandle = {
@@ -957,10 +974,11 @@ type SpawnSubagentOptions = {
 	defaultCli: string
 	workingDirectory: string
 	send: (chatId: number | string, text: string) => Promise<void>
+	persistentStore?: PersistentSessionStore
 }
 
 const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
-	const { chatId, task, label, manifests, defaultCli, workingDirectory, send } = opts
+	const { chatId, task, label, manifests, defaultCli, workingDirectory, send, persistentStore } = opts
 	const cliName = opts.cli || defaultCli
 
 	// Check concurrency limit
@@ -1013,6 +1031,21 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 					case 'completed':
 						console.log(`[jsonl-bridge] Subagent ${record.runId} completed`)
 						subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
+						void persistentStore?.logMessage(
+							chatId,
+							'assistant',
+							evt.answer || lastText || '(no output)',
+							evt.sessionId,
+							cliName,
+							{
+								subagent: {
+									runId: record.runId,
+									label: record.label,
+									status: 'completed',
+									cli: cliName,
+								},
+							},
+						)
 						// Announce completion
 						void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
 						// Prune old runs and persist
@@ -1023,6 +1056,21 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 					case 'error':
 						console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
 						subagentRegistry.markError(record.runId, evt.message)
+						void persistentStore?.logMessage(
+							chatId,
+							'assistant',
+							evt.message,
+							record.childSessionId,
+							cliName,
+							{
+								subagent: {
+									runId: record.runId,
+									label: record.label,
+									status: 'error',
+									cli: cliName,
+								},
+							},
+						)
 						void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
 						void saveSubagentRegistry()
 						break
@@ -1035,6 +1083,21 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 				const current = subagentRegistry.get(record.runId)
 				if (current && current.status === 'running') {
 					subagentRegistry.markError(record.runId, `Process exited with code ${code}`)
+					void persistentStore?.logMessage(
+						chatId,
+						'assistant',
+						`Process exited with code ${code}`,
+						current.childSessionId,
+						cliName,
+						{
+							subagent: {
+								runId: record.runId,
+								label: record.label,
+								status: 'error',
+								cli: cliName,
+							},
+						},
+					)
 					void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
 				}
 				resolve()
@@ -1061,7 +1124,23 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const cronService = new CronService()
 	await cronService.start()
 	const conceptsIndex = createConceptsIndex(config.workingDirectory)
+	const linksIndex = createLinksIndex(config.workingDirectory)
 	const repoNames = await getRepoNames(config.workingDirectory)
+	const expandedWorkspaceDir = expandHome(config.workingDirectory).replace(/\/$/, '')
+	const workspaceBase = basename(expandedWorkspaceDir)
+	const memoryConfig: BridgeMemoryConfig = {
+		enabled: config.memory?.enabled ?? true,
+		qmdBin: config.memory?.qmdBin,
+		qmdIndex: config.memory?.qmdIndex,
+		qmdCollection: config.memory?.qmdCollection ?? workspaceBase,
+		qmdLimit: config.memory?.qmdLimit,
+		qmdMinScore: config.memory?.qmdMinScore,
+		qmdTimeoutMs: config.memory?.qmdTimeoutMs,
+		maxSnippetChars: config.memory?.maxSnippetChars,
+		maxLinks: config.memory?.maxLinks,
+		maxBacklinks: config.memory?.maxBacklinks,
+	}
+	let qmdUnavailable = false
 	
 	console.log(`[jsonl-bridge] Loaded ${persistentStore.resumeTokens.size} resume tokens`)
 
@@ -1081,7 +1160,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		console.error('[jsonl-bridge] Failed to sync memory on startup:', err)
 	}
 
-	const buildRelatedContext = async (text: string): Promise<string | null> => {
+	const buildConceptContext = async (text: string): Promise<string | null> => {
 		try {
 			const index = await conceptsIndex.loadIndex()
 			if (!index) return null
@@ -1099,6 +1178,100 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			console.error('[jsonl-bridge] Failed to build related context:', message)
 			return null
 		}
+	}
+
+	const buildQmdContext = async (text: string): Promise<string | null> => {
+		if (!memoryConfig.enabled || qmdUnavailable) return null
+		if (text.trim().length < 6) return null
+
+		try {
+			const limit = memoryConfig.qmdLimit ?? 3
+			const results = await queryQmd({
+				query: text,
+				bin: memoryConfig.qmdBin,
+				index: memoryConfig.qmdIndex,
+				collection: memoryConfig.qmdCollection,
+				limit,
+				minScore: memoryConfig.qmdMinScore,
+				timeoutMs: memoryConfig.qmdTimeoutMs,
+			})
+
+			if (!results.length) return null
+
+			const snippetLimit = memoryConfig.maxSnippetChars ?? 400
+			const maxLinks = memoryConfig.maxLinks ?? 3
+			const maxBacklinks = memoryConfig.maxBacklinks ?? 3
+			const linksIndexData = maxLinks > 0 || maxBacklinks > 0 ? await linksIndex.loadIndex() : null
+
+			const normalizeSnippet = (value: string) => {
+				const cleaned = value.replace(/\s+/g, ' ').trim()
+				if (cleaned.length <= snippetLimit) return cleaned
+				return `${cleaned.slice(0, snippetLimit)}...`
+			}
+
+			const resolveRelative = (rawPath: string): string | null => {
+				const cleaned = stripQmdPath(rawPath)
+				if (memoryConfig.qmdCollection && cleaned.startsWith(`${memoryConfig.qmdCollection}/`)) {
+					return cleaned.slice(memoryConfig.qmdCollection.length + 1)
+				}
+				const expanded = expandHome(cleaned)
+				if (!expanded.startsWith('/') && !expanded.startsWith('~')) {
+					return cleaned
+				}
+				if (expanded.startsWith(expandedWorkspaceDir)) {
+					return getRelativePath(expanded, config.workingDirectory)
+				}
+				return null
+			}
+
+			const lines: string[] = ['Memory recall:']
+			for (const result of results.slice(0, limit)) {
+				const cleanedPath = stripQmdPath(result.file)
+				const score = Number.isFinite(result.score) ? result.score.toFixed(2) : '0.00'
+				lines.push(`- ${cleanedPath} (${score})`)
+
+				const snippet = result.snippet || result.body
+				if (snippet) {
+					lines.push(`  ${normalizeSnippet(snippet)}`)
+				}
+
+				if (linksIndexData) {
+					const relativePath = resolveRelative(result.file)
+					if (relativePath) {
+						const forward = linksIndexData[relativePath]?.linksTo ?? []
+						if (forward.length > 0) {
+							lines.push(`  Links: ${forward.slice(0, maxLinks).join(', ')}`)
+						}
+
+						const term = basename(relativePath).replace(/\\.md$/, '')
+						const backlinks = term ? linksIndexData[term]?.linkedFrom ?? [] : []
+						if (backlinks.length > 0) {
+							lines.push(`  Backlinks: ${backlinks.slice(0, maxBacklinks).join(', ')}`)
+						}
+					}
+				}
+			}
+
+			return lines.join('\n')
+		} catch (err) {
+			if (!qmdUnavailable) {
+				const message = err instanceof Error ? err.message : 'unknown error'
+				console.warn(`[jsonl-bridge] QMD unavailable, disabling memory recall: ${message}`)
+			}
+			qmdUnavailable = true
+			return null
+		}
+	}
+
+	const buildRelatedContext = async (text: string): Promise<string | null> => {
+		const sections: string[] = []
+		const conceptContext = await buildConceptContext(text)
+		if (conceptContext) sections.push(conceptContext)
+		const qmdContext = await buildQmdContext(text)
+		if (qmdContext) sections.push(qmdContext)
+
+		if (sections.length === 0) return null
+		return sections.join('\n\n')
 	}
 
 	const wsUrl = config.gatewayUrl.replace(/^http/, 'ws')
@@ -1462,6 +1635,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						defaultCli: config.defaultCli,
 						workingDirectory: config.workingDirectory,
 						send,
+						persistentStore,
 					})
 					return
 				}
@@ -1496,6 +1670,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				defaultCli: config.defaultCli,
 				workingDirectory: config.workingDirectory,
 				send,
+				persistentStore,
 			})
 			return
 		}
@@ -1690,6 +1865,21 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						case 'completed':
 							console.log(`[jsonl-bridge] Subagent ${record.runId} completed`)
 							subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
+							void persistentStore?.logMessage(
+								opts.chatId,
+								'assistant',
+								evt.answer || lastText || '(no output)',
+								evt.sessionId,
+								cliName,
+								{
+									subagent: {
+										runId: record.runId,
+										label: record.label,
+										status: 'completed',
+										cli: cliName,
+									},
+								},
+							)
 							void send(opts.chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
 							subagentRegistry.prune(opts.chatId)
 							void saveSubagentRegistry()
@@ -1698,6 +1888,21 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						case 'error':
 							console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
 							subagentRegistry.markError(record.runId, evt.message)
+							void persistentStore?.logMessage(
+								opts.chatId,
+								'assistant',
+								evt.message,
+								record.childSessionId,
+								cliName,
+								{
+									subagent: {
+										runId: record.runId,
+										label: record.label,
+										status: 'error',
+										cli: cliName,
+									},
+								},
+							)
 							void send(opts.chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
 							void saveSubagentRegistry()
 							break
@@ -1709,6 +1914,21 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					const current = subagentRegistry.get(record.runId)
 					if (current && current.status === 'running') {
 						subagentRegistry.markError(record.runId, `Process exited with code ${code}`)
+						void persistentStore?.logMessage(
+							opts.chatId,
+							'assistant',
+							`Process exited with code ${code}`,
+							current.childSessionId,
+							cliName,
+							{
+								subagent: {
+									runId: record.runId,
+									label: record.label,
+									status: 'error',
+									cli: cliName,
+								},
+							},
+						)
 						void send(opts.chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
 					}
 					resolve()

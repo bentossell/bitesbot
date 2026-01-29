@@ -7,6 +7,20 @@ export type BridgeConfig = {
 	defaultCli: string
 	workingDirectory: string
 	adaptersDir: string
+	memory?: MemoryConfig
+}
+
+export type MemoryConfig = {
+	enabled: boolean
+	qmdBin?: string
+	qmdIndex?: string
+	qmdCollection?: string
+	qmdLimit?: number
+	qmdMinScore?: number
+	qmdTimeoutMs?: number
+	maxSnippetChars?: number
+	maxLinks?: number
+	maxBacklinks?: number
 }
 
 export type GatewayConfig = {
@@ -70,11 +84,28 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 	const allowedChatIds = parseAllowedChatIds(env.TG_GATEWAY_ALLOWED_CHAT_IDS, fileConfig.allowedChatIds)
 
 	const fileBridge: Partial<BridgeConfig> = fileConfig.bridge ?? {}
+	const fileMemory: Partial<MemoryConfig> = fileBridge.memory ?? {}
+	const memoryEnabled = env.TG_GATEWAY_MEMORY_ENABLED
+		? env.TG_GATEWAY_MEMORY_ENABLED === 'true'
+		: fileMemory.enabled ?? true
+	const memory: MemoryConfig = {
+		enabled: memoryEnabled,
+		qmdBin: env.TG_GATEWAY_QMD_BIN ?? fileMemory.qmdBin,
+		qmdIndex: env.TG_GATEWAY_QMD_INDEX ?? fileMemory.qmdIndex,
+		qmdCollection: env.TG_GATEWAY_QMD_COLLECTION ?? fileMemory.qmdCollection,
+		qmdLimit: parseNumber(env.TG_GATEWAY_QMD_LIMIT, fileMemory.qmdLimit),
+		qmdMinScore: parseNumber(env.TG_GATEWAY_QMD_MIN_SCORE, fileMemory.qmdMinScore),
+		qmdTimeoutMs: parseNumber(env.TG_GATEWAY_QMD_TIMEOUT_MS, fileMemory.qmdTimeoutMs),
+		maxSnippetChars: parseNumber(env.TG_GATEWAY_QMD_SNIPPET_CHARS, fileMemory.maxSnippetChars),
+		maxLinks: parseNumber(env.TG_GATEWAY_QMD_MAX_LINKS, fileMemory.maxLinks),
+		maxBacklinks: parseNumber(env.TG_GATEWAY_QMD_MAX_BACKLINKS, fileMemory.maxBacklinks),
+	}
 	const bridge: BridgeConfig = {
 		enabled: env.TG_GATEWAY_BRIDGE_ENABLED === 'true' || fileBridge.enabled === true,
 		defaultCli: env.TG_GATEWAY_DEFAULT_CLI ?? fileBridge.defaultCli ?? 'claude',
 		workingDirectory: env.TG_GATEWAY_WORKING_DIR ?? fileBridge.workingDirectory ?? process.cwd(),
 		adaptersDir: env.TG_GATEWAY_ADAPTERS_DIR ?? fileBridge.adaptersDir ?? join(process.cwd(), 'adapters'),
+		memory,
 	}
 
 	return {

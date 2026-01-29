@@ -27,13 +27,23 @@ type ResumeTokenStore = {
 	chatSettings: Record<string, ChatSettings> // key: chatId
 }
 
-type SessionLogEntry = {
+export type SessionLogMeta = {
+	subagent?: {
+		runId: string
+		label?: string
+		status?: string
+		cli?: string
+	}
+}
+
+export type SessionLogEntry = {
 	timestamp: string
 	chatId: string | number
 	role: 'user' | 'assistant' | 'system'
 	text: string
 	sessionId?: string
 	cli?: string
+	meta?: SessionLogMeta
 }
 
 const DEFAULT_STORE: ResumeTokenStore = { version: 1, tokens: {}, activeCli: {}, chatSettings: {} }
@@ -73,7 +83,14 @@ export type PersistentSessionStore = {
 	setActiveCli: (chatId: number | string, cli: string) => Promise<void>
 	getChatSettings: (chatId: number | string) => ChatSettings
 	setChatSettings: (chatId: number | string, settings: Partial<ChatSettings>) => Promise<void>
-	logMessage: (chatId: number | string, role: 'user' | 'assistant', text: string, sessionId?: string, cli?: string) => Promise<void>
+	logMessage: (
+		chatId: number | string,
+		role: 'user' | 'assistant',
+		text: string,
+		sessionId?: string,
+		cli?: string,
+		meta?: SessionLogMeta
+	) => Promise<void>
 }
 
 export const createPersistentSessionStore = async (): Promise<PersistentSessionStore> => {
@@ -125,7 +142,7 @@ export const createPersistentSessionStore = async (): Promise<PersistentSessionS
 			await persist()
 		},
 		
-		logMessage: async (chatId, role, text, sessionId, cli) => {
+		logMessage: async (chatId, role, text, sessionId, cli, meta) => {
 			await logSessionMessage({
 				timestamp: new Date().toISOString(),
 				chatId,
@@ -133,6 +150,7 @@ export const createPersistentSessionStore = async (): Promise<PersistentSessionS
 				text,
 				sessionId,
 				cli,
+				meta,
 			})
 		},
 	}

@@ -1,14 +1,6 @@
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-
-type SessionLogEntry = {
-	timestamp: string
-	chatId: string | number
-	role: 'user' | 'assistant' | 'system'
-	text: string
-	sessionId?: string
-	cli?: string
-}
+import type { SessionLogEntry } from './session-store.js'
 
 /**
  * Read today's session log entries from the workspace
@@ -89,7 +81,8 @@ const formatSection = (entries: SessionLogEntry[]): string => {
 	
 	// Summarize the conversation - just key points
 	const userMessages = entries.filter(e => e.role === 'user')
-	const assistantMessages = entries.filter(e => e.role === 'assistant')
+	const assistantMessages = entries.filter(e => e.role === 'assistant' && !e.meta?.subagent)
+	const subagentMessages = entries.filter(e => e.meta?.subagent)
 	
 	// Add user queries (truncated)
 	for (const msg of userMessages.slice(0, 5)) {
@@ -107,6 +100,19 @@ const formatSection = (entries: SessionLogEntry[]): string => {
 			? lastAssistant.text.slice(0, 500) + '...' 
 			: lastAssistant.text
 		lines.push(`\n**Assistant:** ${preview}`)
+	}
+
+	if (subagentMessages.length > 0) {
+		lines.push('\n**Subagents:**')
+		for (const entry of subagentMessages) {
+			const meta = entry.meta?.subagent
+			const label = meta?.label || meta?.runId.slice(0, 8) || 'subagent'
+			const status = meta?.status ? ` (${meta.status})` : ''
+			const preview = entry.text.length > 300
+				? entry.text.slice(0, 300) + '...'
+				: entry.text
+			lines.push(`- ${label}${status}: ${preview}`)
+		}
 	}
 	
 	return lines.join('\n')
