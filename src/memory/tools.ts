@@ -167,7 +167,19 @@ export const formatMemoryToolResultPrompt = (
 export const buildMemoryToolInstructions = (): string =>
 	[
 		'Memory tools available:',
+		'Policy (enforced):',
+		'- If the user asks you to recall prior chats, prior messages, or workspace facts you are not 100% sure about, you MUST use memory_search and/or memory_get before answering.',
+		'- Do not guess. If recall is needed, your next reply must be a single JSON tool call (no extra text).',
 		'Use ONE of the following as your entire reply when you need memory.',
 		'{"tool":"memory_search","query":"<query>","maxResults":6,"minScore":0.35}',
 		'{"tool":"memory_get","path":"memory/file.md","from":1,"lines":20}',
+	].join('\n')
+
+export const buildRecallEnforcementHint = (): string =>
+	[
+		'RECALL REQUIRED:',
+		'This question requires checking durable memory. Your next reply MUST be exactly one memory tool JSON call:',
+		'- Start with memory_search using a precise query.',
+		'- If you find a relevant file, follow with memory_get on the best path and line range.',
+		'No other text, no analysis, no answer until memory is checked.',
 	].join('\n')

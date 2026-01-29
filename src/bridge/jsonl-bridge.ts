@@ -9,6 +9,7 @@ import {
 } from './jsonl-session.js'
 import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
 import { syncSessionToMemory } from './memory-sync.js'
+import { maybeAutoFlushSessionToMemory } from './auto-memory-flush.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
 import type { CronJob } from '../cron/types.js'
 import { logToFile } from '../logging/file.js'
@@ -37,6 +38,7 @@ import { buildMemoryRecall } from '../memory/recall.js'
 import type { MemoryConfig } from '../memory/types.js'
 import {
 	buildMemoryToolInstructions,
+	buildRecallEnforcementHint,
 	formatMemoryToolResultPrompt,
 	parseMemoryToolCall,
 	runMemoryTool,
@@ -53,6 +55,7 @@ import {
 	saveConceptConfig,
 } from '../workspace/concepts.js'
 import { getRelativePath } from '../workspace/path-utils.js'
+import { buildBootContext } from '../workspace/boot-context.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -603,6 +606,19 @@ const SUBAGENT_SPAWN_INSTRUCTIONS = [
 	'Do not include any other text before or after /spawn.',
 ].join('\n')
 
+const isRecallQuestion = (text: string): boolean => {
+	const t = text.trim().toLowerCase()
+	if (!t) return false
+	// User asking about prior convo / personal/workspace state should trigger enforced recall.
+	return (
+		/(what|when|where|who)\s+did\s+(i|we)\s+(say|decide|agree|do)/.test(t) ||
+		/\b(remind me|remember|as i said|last time|previously|earlier)\b/.test(t) ||
+		/\b(my (todo|goals?|plans?|notes?|setup)|your (notes?|memory))\b/.test(t) ||
+		t.includes('in our last') ||
+		t.includes('in our previous')
+	)
+}
+
 const isSpawnDirectiveCandidate = (text: string): boolean =>
 	text.trimStart().startsWith('/spawn')
 
@@ -634,6 +650,7 @@ type SpawnSubagentOptions = {
 	defaultCli: string
 	subagentFallbackCli?: string
 	workingDirectory: string
+	memory?: MemoryConfig
 	model?: string
 	send: (chatId: number | string, text: string) => Promise<void>
 	logMessage?: (
@@ -790,7 +807,31 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 			})
 
 			// Run the subagent (no resume token - fresh session)
-			session.run(task, undefined, { model: opts.model })
+			const run = async () => {
+				let prompt = task
+				// Deterministic boot context for fresh subagents
+				try {
+					const boot = await buildBootContext(workingDirectory)
+					if (boot) prompt = `${boot}\n\n${prompt}`
+				} catch {
+					// ignore
+				}
+				// Memory tooling/enforcement for subagents too
+				if (opts.memory?.enabled) {
+					try {
+						const memoryRecall = await buildMemoryRecall(task, opts.memory)
+						if (memoryRecall) prompt = `${memoryRecall}\n\n${prompt}`
+						prompt = `${buildMemoryToolInstructions()}\n\n${prompt}`
+						if (isRecallQuestion(task)) {
+							prompt = `${buildRecallEnforcementHint()}\n\n${prompt}`
+						}
+					} catch {
+						// ignore
+					}
+				}
+				session.run(prompt, undefined, { model: opts.model })
+			}
+			void run()
 		})
 	})
 
@@ -890,9 +931,33 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const originalPrompt = prompt
 		let cronMarked = false
 
+		// Pre-threshold durable flush (best-effort; never blocks the user)
+		try {
+			if (config.memory?.enabled) {
+				void maybeAutoFlushSessionToMemory(config.workingDirectory)
+			}
+		} catch {
+			// ignore
+		}
+
 		// Use active CLI for this chat, or default (check persistent store first)
 		const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
 		
+		// Get existing resume token for this specific CLI
+		const resumeToken = sessionStore.getResumeToken(chatId, cliName)
+
+		// Deterministic boot context for fresh sessions (after restart or /new)
+		if (!resumeToken) {
+			try {
+				const boot = await buildBootContext(config.workingDirectory)
+				if (boot) {
+					prompt = `${boot}\n\n${prompt}`
+				}
+			} catch {
+				// ignore boot context failures
+			}
+		}
+
 		// Inject any pending subagent results into the prompt
 		const pendingResults = formatPendingResultsForInjection(chatId)
 		if (pendingResults) {
@@ -900,6 +965,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			console.log(`[jsonl-bridge] Injected subagent results into prompt`)
 		}
 
+		const recallRequired = config.memory?.enabled === true && context?.source !== 'memory-tool' && isRecallQuestion(originalPrompt)
 		if (config.memory?.enabled) {
 			try {
 				const memoryRecall = await buildMemoryRecall(originalPrompt, config.memory)
@@ -914,6 +980,11 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				const message = err instanceof Error ? err.message : 'unknown error'
 				console.error('[jsonl-bridge] Failed to build memory recall:', message)
 			}
+		}
+
+		// Enforce tool-based recall for recall questions (forces a tool call loop)
+		if (recallRequired) {
+			prompt = `${buildRecallEnforcementHint()}\n\n${prompt}`
 		}
 
 		if (!context?.source) {
@@ -934,9 +1005,6 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			await send(chatId, `CLI '${cliName}' not found. Check adapters directory.`)
 			return
 		}
-
-		// Get existing resume token for this specific CLI
-		const resumeToken = sessionStore.getResumeToken(chatId, cliName)
 
 		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Starting ${cliName} session for ${chatId}${resumeToken ? ' (resuming)' : ''}`)
 
@@ -1127,6 +1195,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 								defaultCli: config.defaultCli,
 								subagentFallbackCli: config.subagentFallbackCli,
 								workingDirectory: config.workingDirectory,
+								memory: config.memory,
 								model: settings.model,
 								send,
 								logMessage: persistentStore.logMessage,
@@ -1171,6 +1240,14 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 							}
 
 							void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
+							// Post-turn durable flush (best-effort)
+							try {
+								if (config.memory?.enabled) {
+									void maybeAutoFlushSessionToMemory(config.workingDirectory)
+								}
+							} catch {
+								// ignore
+							}
 						
 						// Extract and send any file attachments from the response (for non-streaming case)
 						const { files, remainingText } = extractSendfileCommands(evt.answer)
@@ -1349,6 +1426,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						defaultCli: config.defaultCli,
 						subagentFallbackCli: config.subagentFallbackCli,
 						workingDirectory: config.workingDirectory,
+						memory: config.memory,
 						model: settings.model,
 						send,
 						logMessage: persistentStore.logMessage,
@@ -1388,6 +1466,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				defaultCli: config.defaultCli,
 				subagentFallbackCli: config.subagentFallbackCli,
 				workingDirectory: config.workingDirectory,
+				memory: config.memory,
 				model: settings.model,
 				send,
 				logMessage: persistentStore.logMessage,
