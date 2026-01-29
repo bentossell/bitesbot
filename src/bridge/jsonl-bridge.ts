@@ -689,14 +689,21 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 
 		let lastText = ''
 		let loggedFinal = false
+		let startedAnnounced = false
 
 		return new Promise<void>((resolve) => {
 			session.on('event', (evt: BridgeEvent) => {
 				switch (evt.type) {
-					case 'started':
+					case 'started': {
 						subagentRegistry.markRunning(record.runId, evt.sessionId)
 						console.log(`[jsonl-bridge] Subagent ${record.runId} started: ${evt.sessionId}`)
+						if (!startedAnnounced) {
+							startedAnnounced = true
+							const startedLabel = label || `Subagent #${record.runId.slice(0, 8)}`
+							void send(chatId, `🔄 Started: ${startedLabel}`)
+						}
 						break
+					}
 
 					case 'text':
 						if (evt.text) {

@@ -65,7 +65,7 @@ const waitForBotMessage = async (client: TelegramClient, bot: string, expectedTe
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() < deadline) {
 		const messages = await client.getMessages(bot, { limit: 5 })
-		const match = messages.find((msg) => 'message' in msg && msg.message === expectedText)
+		const match = messages.find((msg) => 'message' in msg && msg.message === expectedText && msg.out === false)
 		if (match) return match
 		await delay(1000)
 	}
@@ -76,7 +76,7 @@ const waitForBotMessageContaining = async (client: TelegramClient, bot: string, 
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() < deadline) {
 		const messages = await client.getMessages(bot, { limit: 5 })
-		const match = messages.find((msg) => 'message' in msg && msg.message?.includes(substring))
+		const match = messages.find((msg) => 'message' in msg && msg.message?.includes(substring) && msg.out === false)
 		if (match && 'message' in match) return match.message
 		await delay(1000)
 	}
@@ -92,16 +92,18 @@ const waitForNewBotMessage = async (
 	timeoutMs: number,
 ): Promise<string> => {
 	const deadline = Date.now() + timeoutMs
+	const cutoff = Math.max(0, afterTimestamp - 1500)
 	const seenIds = new Set<number>()
 	
 	while (Date.now() < deadline) {
 		const messages = await client.getMessages(bot, { limit: 10 })
 		for (const msg of messages) {
 			if (!('message' in msg) || !msg.message || !msg.id) continue
+			if (msg.out === true) continue
 			if (seenIds.has(msg.id)) continue
 			// Check if message is after our timestamp (Telegram dates are in seconds)
 			const msgDate = msg.date ? msg.date * 1000 : 0
-			if (msgDate < afterTimestamp) continue
+			if (msgDate < cutoff) continue
 			seenIds.add(msg.id)
 			if (predicate(msg.message)) {
 				return msg.message
@@ -110,6 +112,35 @@ const waitForNewBotMessage = async (
 		await delay(1000)
 	}
 	throw new Error('Timeout waiting for new bot message matching predicate')
+}
+
+const waitForNewBotMessageWithMeta = async (
+	client: TelegramClient,
+	bot: string,
+	afterTimestamp: number,
+	predicate: (text: string) => boolean,
+	timeoutMs: number,
+): Promise<{ text: string; timestamp: number; id: number }> => {
+	const deadline = Date.now() + timeoutMs
+	const cutoff = Math.max(0, afterTimestamp - 1500)
+	const seenIds = new Set<number>()
+
+	while (Date.now() < deadline) {
+		const messages = await client.getMessages(bot, { limit: 10 })
+		for (const msg of messages) {
+			if (!('message' in msg) || !msg.message || !msg.id) continue
+			if (msg.out === true) continue
+			if (seenIds.has(msg.id)) continue
+			const msgDate = msg.date ? msg.date * 1000 : 0
+			if (msgDate < cutoff) continue
+			seenIds.add(msg.id)
+			if (predicate(msg.message)) {
+				return { text: msg.message, timestamp: msgDate, id: msg.id }
+			}
+		}
+		await delay(1000)
+	}
+	throw new Error('Timeout waiting for new bot message with meta')
 }
 
 // Single gateway instance - Telegram only allows one poller per bot token
@@ -291,24 +322,52 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		await client.sendMessage(botUsername, { message: '/use droid' })
 		await waitForBotMessage(client, botUsername, 'Switched to droid.', SHORT_TIMEOUT)
 
-		const mainPrompt = `Main-${token}: Reply with exactly "main-${token}:4".`
-		await client.sendMessage(botUsername, { message: mainPrompt })
-		const mainReply = await waitForBotMessageContaining(client, botUsername, `main-${token}:4`, LONG_TIMEOUT)
-		expect(mainReply).toContain(`main-${token}:4`)
-
-		const spawnPrompt = `/spawn --label "${label}" "Reply with exactly sub-${token}:42."`
+		const spawnPrompt = `/spawn --label "${label}" "Write 60 bullet points about shipping a feature. Use 6 section headings with 10 bullets each. Each bullet must be at least 12 words. End with sub-${token}:42."`
 		await client.sendMessage(botUsername, { message: spawnPrompt })
-		const spawnAck = await waitForBotMessageContaining(client, botUsername, `🚀 Spawned: ${label}`, LONG_TIMEOUT)
-		expect(spawnAck).toContain(`🚀 Spawned: ${label}`)
+		const spawnAck = await waitForNewBotMessageWithMeta(
+			client,
+			botUsername,
+			Date.now(),
+			(text) => text.includes(`🚀 Spawned: ${label}`),
+			LONG_TIMEOUT,
+		)
+		expect(spawnAck.text).toContain(`🚀 Spawned: ${label}`)
+
+		const startedMsg = await waitForNewBotMessageWithMeta(
+			client,
+			botUsername,
+			spawnAck.timestamp,
+			(text) => text.includes(`🔄 Started: ${label}`),
+			LONG_TIMEOUT,
+		)
+		expect(startedMsg.text).toContain(`🔄 Started: ${label}`)
 
 		const followPrompt = `Main2-${token}: Reply with exactly "main-${token}:6".`
 		await client.sendMessage(botUsername, { message: followPrompt })
-		const followReply = await waitForBotMessageContaining(client, botUsername, `main-${token}:6`, LONG_TIMEOUT)
-		expect(followReply).toContain(`main-${token}:6`)
-
-		const subagentDone = await waitForBotMessageContaining(client, botUsername, `✅ ${label}`, LONG_TIMEOUT)
-		expect(subagentDone).toContain(`✅ ${label}`)
-		expect(subagentDone).toContain(`sub-${token}:42`)
+		const [followReply, subagentDone] = await Promise.all([
+			waitForNewBotMessageWithMeta(
+				client,
+				botUsername,
+				startedMsg.timestamp,
+				(text) => text.includes(`main-${token}:6`),
+				LONG_TIMEOUT,
+			),
+			waitForNewBotMessageWithMeta(
+				client,
+				botUsername,
+				startedMsg.timestamp,
+				(text) => text.includes(`✅ ${label}`),
+				LONG_TIMEOUT,
+			),
+		])
+		console.log(`[e2e] started id=${startedMsg.id} ts=${startedMsg.timestamp} text="${startedMsg.text}"`)
+		console.log(`[e2e] main reply id=${followReply.id} ts=${followReply.timestamp} text="${followReply.text}"`)
+		console.log(`[e2e] subagent done id=${subagentDone.id} ts=${subagentDone.timestamp} text="${subagentDone.text}"`)
+		expect(followReply.text).toContain(`main-${token}:6`)
+		expect(subagentDone.text).toContain(`✅ ${label}`)
+		expect(subagentDone.text).toContain(`sub-${token}:42`)
+		expect(startedMsg.id).toBeLessThan(followReply.id)
+		expect(followReply.id).toBeLessThan(subagentDone.id)
 	}, LONG_TIMEOUT)
 
 	it('sends a prompt and receives an AI response', async () => {
