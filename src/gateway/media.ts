@@ -133,9 +133,9 @@ export const processVoiceAttachment = async (
 ): Promise<string> => {
 	console.log(`[media] Processing ${attachment.type} attachment...`)
 
-	// Download the file
+	// Download the file (if not already available)
 	const extension = getExtension(attachment)
-	const audioPath = await downloadTelegramFile(bot, attachment.fileId, extension)
+	const audioPath = attachment.localPath ?? await downloadTelegramFile(bot, attachment.fileId, extension)
 	console.log(`[media] Downloaded to ${audioPath}`)
 
 	// Transcribe

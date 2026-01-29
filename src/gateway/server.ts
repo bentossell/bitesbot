@@ -1,9 +1,11 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage as HttpIncomingMessage, ServerResponse } from 'node:http'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, stat, readdir, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
+import { Readable } from 'node:stream'
+import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { pipeline } from 'node:stream/promises'
 import { Bot, InputFile } from 'grammy'
 import { WebSocketServer } from 'ws'
@@ -48,6 +50,30 @@ const resolvePath = (req: HttpIncomingMessage) => {
 	return url.pathname
 }
 
+const TEMP_DIR = join(tmpdir(), 'agent-gateway-files')
+const TEMP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+const cleanupTempFiles = async (): Promise<void> => {
+	try {
+		const entries = await readdir(TEMP_DIR, { withFileTypes: true })
+		const now = Date.now()
+		await Promise.all(entries.map(async (entry) => {
+			if (!entry.isFile()) return
+			const filePath = join(TEMP_DIR, entry.name)
+			try {
+				const stats = await stat(filePath)
+				if (now - stats.mtimeMs > TEMP_MAX_AGE_MS) {
+					await unlink(filePath)
+				}
+			} catch {
+				// ignore per-file errors
+			}
+		}))
+	} catch {
+		// ignore cleanup errors
+	}
+}
+
 // Download a Telegram file to local temp directory
 const downloadTelegramFile = async (bot: Bot, fileId: string, type: 'photo' | 'document' | 'voice' | 'audio'): Promise<string> => {
 	const file = await bot.api.getFile(fileId)
@@ -57,9 +83,8 @@ const downloadTelegramFile = async (bot: Bot, fileId: string, type: 'photo' | 'd
 	
 	const extMap: Record<string, string> = { photo: 'jpg', voice: 'ogg', audio: 'mp3' }
 	const ext = extMap[type] ?? (file.file_path.split('.').pop() || 'bin')
-	const localDir = join(tmpdir(), 'agent-gateway-files')
-	await mkdir(localDir, { recursive: true })
-	const localPath = join(localDir, `${fileId}.${ext}`)
+	await mkdir(TEMP_DIR, { recursive: true })
+	const localPath = join(TEMP_DIR, `${fileId}.${ext}`)
 	
 	const fileUrl = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`
 	const response = await fetch(fileUrl)
@@ -68,8 +93,8 @@ const downloadTelegramFile = async (bot: Bot, fileId: string, type: 'photo' | 'd
 	}
 	
 	const writeStream = createWriteStream(localPath)
-	// Readable stream compatibility
-	await pipeline(response.body as unknown as NodeJS.ReadableStream, writeStream)
+	const webStream = response.body as WebReadableStream<Uint8Array>
+	await pipeline(Readable.fromWeb(webStream), writeStream)
 	
 	return localPath
 }
@@ -138,6 +163,8 @@ const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 export const startGatewayServer = async (config: GatewayConfig): Promise<GatewayServerHandle> => {
 	const bot = new Bot(config.botToken)
 	const startedAt = new Date()
+	void cleanupTempFiles()
+	const cleanupTimer = setInterval(() => void cleanupTempFiles(), 6 * 60 * 60 * 1000)
 	let botInfo: Awaited<ReturnType<typeof bot.api.getMe>> | undefined
 	const activeChats = new Set<number>()
 	let lastActiveChatId: number | undefined
@@ -391,6 +418,7 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			for (const chatId of activeChats) {
 				await notifyError(chatId, 'Gateway disconnected').catch(() => {})
 			}
+			clearInterval(cleanupTimer)
 			wss.close()
 			await bot.stop()
 			await new Promise<void>((resolve) => server.close(() => resolve()))

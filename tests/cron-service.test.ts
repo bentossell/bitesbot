@@ -9,13 +9,13 @@ import type { CronStore, CronJob } from '../src/cron/types.js'
 const createTempStorePath = async () => {
 	const dir = join(tmpdir(), `cron-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)
 	await mkdir(dir, { recursive: true })
-	return { dir, path: join(dir, 'cron.json') }
+	return { dir, path: join(dir, 'cron.json'), runsDir: join(dir, 'cron-runs') }
 }
 
 describe('CronService', () => {
 	it('adds and lists jobs', async () => {
-		const { dir, path } = await createTempStorePath()
-		const service = new CronService({ storePath: path })
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir })
 		try {
 			const job = await service.add({ name: 'Test job', schedule: { kind: 'every', everyMs: 60000 } })
 			const jobs = await service.list()
@@ -28,8 +28,8 @@ describe('CronService', () => {
 	})
 
 	it('removes jobs', async () => {
-		const { dir, path } = await createTempStorePath()
-		const service = new CronService({ storePath: path })
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir })
 		try {
 			const job = await service.add({ name: 'Remove me', schedule: { kind: 'every', everyMs: 60000 } })
 			const removed = await service.remove(job.id)
@@ -41,8 +41,8 @@ describe('CronService', () => {
 	})
 
 	it('enables and disables jobs', async () => {
-		const { dir, path } = await createTempStorePath()
-		const service = new CronService({ storePath: path })
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir })
 		try {
 			const job = await service.add({ name: 'Toggle', schedule: { kind: 'every', everyMs: 60000 } })
 			const disabled = await service.enable(job.id, false)
@@ -62,8 +62,8 @@ describe('CronService', () => {
 	})
 
 	it('run emits job:due and updates schedule', async () => {
-		const { dir, path } = await createTempStorePath()
-		const service = new CronService({ storePath: path })
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir })
 		try {
 			const job = await service.add({ name: 'Run now', schedule: { kind: 'every', everyMs: 60000 } })
 			const events: CronJob[] = []
@@ -85,7 +85,7 @@ describe('CronService', () => {
 	})
 
 	it('emits missed cron runs on start', async () => {
-		const { dir, path } = await createTempStorePath()
+		const { dir, path, runsDir } = await createTempStorePath()
 		const now = new Date()
 		const lastRun = new Date(now.getTime() - 5 * 60 * 1000).getTime()
 		const store: CronStore = {
@@ -105,7 +105,7 @@ describe('CronService', () => {
 		}
 
 		await saveCronStore(path, store)
-		const service = new CronService({ storePath: path, checkIntervalMs: 999_999 })
+		const service = new CronService({ storePath: path, runsDir, checkIntervalMs: 999_999 })
 
 		try {
 			const eventPromise = new Promise<CronJob>((resolve) => {
@@ -117,6 +117,51 @@ describe('CronService', () => {
 			await service.start()
 			const job = await eventPromise
 			expect(job.name).toBe('Missed job')
+		} finally {
+			service.stop()
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('queues next-heartbeat jobs and flushes them', async () => {
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir, checkIntervalMs: 10 })
+		try {
+			await service.start()
+			await service.add({
+				name: 'Heartbeat job',
+				schedule: { kind: 'every', everyMs: 5 },
+				wakeMode: 'next-heartbeat',
+			})
+
+			await new Promise((resolve) => setTimeout(resolve, 30))
+			const pending = service.flushPendingHeartbeat()
+			expect(pending.some(job => job.name === 'Heartbeat job')).toBe(true)
+		} finally {
+			service.stop()
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('emits job:isolated for isolated sessions', async () => {
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir, checkIntervalMs: 10 })
+		try {
+			await service.start()
+			await service.add({
+				name: 'Isolated job',
+				schedule: { kind: 'every', everyMs: 5 },
+				sessionTarget: 'isolated',
+			})
+
+			const eventPromise = new Promise<CronJob>((resolve) => {
+				service.on('event', (evt) => {
+					if (evt.type === 'job:isolated') resolve(evt.job)
+				})
+			})
+
+			const job = await eventPromise
+			expect(job.name).toBe('Isolated job')
 		} finally {
 			service.stop()
 			await rm(dir, { recursive: true, force: true })

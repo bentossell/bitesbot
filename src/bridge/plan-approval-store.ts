@@ -7,6 +7,10 @@ const pendingApprovals = new Map<string, PlanApprovalState>()
 const makeKey = (chatId: number | string, messageId?: number, userId?: number | string): string => {
 	// Base key is chatId - for looking up pending plans by chat
 	const parts = [String(chatId)]
+	// Include messageId if provided to distinguish multiple pending plans
+	if (messageId !== undefined) {
+		parts.push(String(messageId))
+	}
 	// Include userId if provided for user-specific validation
 	if (userId !== undefined) {
 		parts.push(String(userId))
@@ -26,6 +30,10 @@ export const getPendingPlan = (chatId: number | string, messageId?: number, user
 		const exactKey = makeKey(chatId, messageId, userId)
 		const exact = pendingApprovals.get(exactKey)
 		if (exact) return exact
+		// Fallback to chat+user key if messageId was not stored
+		const userKey = makeKey(chatId, undefined, userId)
+		const userMatch = pendingApprovals.get(userKey)
+		if (userMatch) return userMatch
 	}
 	// Fall back to chat-only key for backward compatibility
 	const fallbackKey = String(chatId)
@@ -38,6 +46,12 @@ export const removePendingPlan = (chatId: number | string, messageId?: number, u
 		const exactKey = makeKey(chatId, messageId, userId)
 		if (pendingApprovals.has(exactKey)) {
 			pendingApprovals.delete(exactKey)
+			return
+		}
+		// Remove chat+user key if present
+		const userKey = makeKey(chatId, undefined, userId)
+		if (pendingApprovals.has(userKey)) {
+			pendingApprovals.delete(userKey)
 			return
 		}
 	}

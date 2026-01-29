@@ -11,12 +11,14 @@ import {
 import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
 import { syncSessionToMemory } from './memory-sync.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
+import type { CronJob } from '../cron/types.js'
 import { logToFile } from '../logging/file.js'
 import {
 	subagentRegistry,
 	saveSubagentRegistry,
 	loadSubagentRegistry,
 	formatPendingResultsForInjection,
+	type SubagentRunRecord,
 } from './subagent-registry.js'
 import {
 	CommandLane,
@@ -621,6 +623,7 @@ type NativeSpecModeOptions = {
 	workingDirectory: string
 	gatewayUrl: string
 	authToken?: string
+	model?: string
 	send: (chatId: number | string, text: string) => Promise<void>
 	typing: (chatId: number | string) => Promise<void>
 	sessionStore: SessionStore
@@ -631,7 +634,7 @@ type NativeSpecModeOptions = {
  * The agent will create a plan and emit a spec_plan event when ExitSpecMode is called
  */
 const runNativeSpecMode = async (opts: NativeSpecModeOptions): Promise<void> => {
-	const { chatId, task, cli, manifests, workingDirectory, gatewayUrl, authToken, send, typing, sessionStore } = opts
+	const { chatId, task, cli, manifests, workingDirectory, gatewayUrl, authToken, model, send, typing, sessionStore } = opts
 
 	const manifest = manifests.get(cli)
 	if (!manifest) {
@@ -764,7 +767,7 @@ const runNativeSpecMode = async (opts: NativeSpecModeOptions): Promise<void> => 
 	})
 
 	// Run with spec mode enabled (no resume for fresh planning)
-	session.run(task, undefined, { specMode: true })
+	session.run(task, undefined, { specMode: true, model })
 }
 
 type CreatePlanOptions = {
@@ -962,10 +965,15 @@ type SpawnSubagentOptions = {
 	defaultCli: string
 	subagentFallbackCli?: string
 	workingDirectory: string
+	model?: string
 	send: (chatId: number | string, text: string) => Promise<void>
 }
 
-const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
+type SpawnSubagentInternalOptions = SpawnSubagentOptions & {
+	throwOnError?: boolean
+}
+
+const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promise<SubagentRunRecord | null> => {
 	const { chatId, task, label, manifests, defaultCli, workingDirectory, send } = opts
 	const requestedCli = opts.cli || defaultCli
 	let cliName = requestedCli
@@ -982,14 +990,18 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 
 	// Check concurrency limit
 	if (!subagentRegistry.canSpawn(chatId)) {
+		const message = 'Too many subagents running'
+		if (opts.throwOnError) throw new Error(message)
 		await send(chatId, '⚠️ Too many subagents running. Stop some first with /subagents stop all')
-		return
+		return null
 	}
 
 	const manifest = manifests.get(cliName)
 	if (!manifest) {
-		await send(chatId, `❌ CLI not found: ${cliName}`)
-		return
+		const message = `CLI not found: ${cliName}`
+		if (opts.throwOnError) throw new Error(message)
+		await send(chatId, `❌ ${message}`)
+		return null
 	}
 
 	// Register the run
@@ -1059,9 +1071,15 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 			})
 
 			// Run the subagent (no resume token - fresh session)
-			session.run(task)
+			session.run(task, undefined, { model: opts.model })
 		})
 	})
+
+	return record
+}
+
+const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
+	await spawnSubagentInternal(opts)
 }
 
 export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> => {
@@ -1142,9 +1160,15 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		console.log(`[jsonl-bridge] Primary chat initialized from config: ${primaryChatId}`)
 	}
 
-	const processMessage = async (chatId: number | string, prompt: string) => {
+	type MessageContext = {
+		source?: 'user' | 'cron'
+		cronJobId?: string
+	}
+
+	const processMessage = async (chatId: number | string, prompt: string, context?: MessageContext) => {
 		const t0 = Date.now()
 		const originalPrompt = prompt
+		let cronMarked = false
 
 		// Use active CLI for this chat, or default (check persistent store first)
 		const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
@@ -1196,8 +1220,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		let currentSessionId: string | undefined
 		const taskRunByToolId = new Map<string, string>()
 		let streamBuffer = ''
+		let lastStreamedText = ''
 		let streamTimer: ReturnType<typeof setTimeout> | null = null
-		const streamedTexts = new Set<string>()
 		const STREAM_MIN_CHARS = 800
 		const STREAM_IDLE_MS = 1500
 
@@ -1210,23 +1234,28 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				streamTimer = null
 			}
 			if (!streamBuffer || (!force && streamBuffer.length < STREAM_MIN_CHARS)) return
-			
-			// Extract any [Sendfile:] commands from streaming text
-			const { files, remainingText } = extractSendfileCommands(streamBuffer)
-			
+
+			const delta = streamBuffer.startsWith(lastStreamedText)
+				? streamBuffer.slice(lastStreamedText.length)
+				: streamBuffer
+			if (!delta.trim()) return
+
+			// Extract any [Sendfile:] commands from streaming delta
+			const { files, remainingText } = extractSendfileCommands(delta)
+
 			// Queue files to send after completion (don't send mid-stream)
 			for (const file of files) {
 				if (!pendingFiles.some(f => f.path === file.path)) {
 					pendingFiles.push(file)
 				}
 			}
-			
+
 			const toSend = remainingText.trim()
-			streamBuffer = ''
-			if (toSend && !streamedTexts.has(toSend)) {
-				streamedTexts.add(toSend)
+			if (toSend) {
 				await send(chatId, toSend)
 			}
+
+			lastStreamedText = streamBuffer
 		}
 
 		const scheduleStreamFlush = () => {
@@ -1249,7 +1278,17 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				case 'text':
 					// Handle streaming text if enabled (check dynamically)
 					if (getSettings().streaming && evt.text) {
-						streamBuffer = evt.text
+						if (!streamBuffer) {
+							streamBuffer = evt.text
+						} else if (evt.text.startsWith(streamBuffer)) {
+							// Snapshot-style updates (full text so far)
+							streamBuffer = evt.text
+						} else if (streamBuffer.startsWith(evt.text)) {
+							// Older snapshot, ignore
+						} else {
+							// Incremental chunk
+							streamBuffer += evt.text
+						}
 						if (streamBuffer.length >= STREAM_MIN_CHARS) {
 							await flushStreamBuffer(true)
 						} else {
@@ -1314,12 +1353,20 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					}
 					break
 
-				case 'completed':
-					stopTypingLoop()
-					if (streamTimer) {
-						clearTimeout(streamTimer)
-						streamTimer = null
-					}
+					case 'completed':
+						stopTypingLoop()
+						if (streamTimer) {
+							clearTimeout(streamTimer)
+							streamTimer = null
+						}
+						if (context?.cronJobId && !cronMarked) {
+							const errorMessage = evt.isError ? (evt.answer || 'error') : undefined
+							cronService.markComplete(context.cronJobId, errorMessage)
+							cronMarked = true
+						}
+						if (getSettings().streaming) {
+							await flushStreamBuffer(true)
+						}
 					console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 					void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
@@ -1351,15 +1398,28 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						// Send remaining text (if any, and not already streamed)
 						const textToSend = files.length > 0 ? remainingText : evt.answer
 						if (textToSend) {
-							// If streaming was on, check if we already sent this content
-							if (getSettings().streaming && streamedTexts.has(textToSend.trim())) {
-								// Already sent via streaming
+							if (getSettings().streaming) {
+								const trimmed = textToSend.trim()
+								if (!trimmed) {
+									// nothing to send
+								} else if (lastStreamedText && trimmed.startsWith(lastStreamedText)) {
+									const delta = trimmed.slice(lastStreamedText.length).trim()
+									if (delta) {
+										const chunks = splitMessage(delta)
+										for (const chunk of chunks) {
+											await send(chatId, chunk)
+										}
+									}
+								} else if (!lastStreamedText || trimmed !== lastStreamedText) {
+									const chunks = splitMessage(trimmed)
+									for (const chunk of chunks) {
+										await send(chatId, chunk)
+									}
+								}
 							} else {
 								const chunks = splitMessage(textToSend)
 								for (const chunk of chunks) {
-									if (!streamedTexts.has(chunk.trim())) {
-										await send(chatId, chunk)
-									}
+									await send(chatId, chunk)
 								}
 							}
 						}
@@ -1369,39 +1429,54 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					}
 					break
 
-				case 'error':
-					stopTypingLoop()
-					if (streamTimer) {
-						clearTimeout(streamTimer)
-						streamTimer = null
-					}
-					await send(chatId, `❌ ${evt.message}`)
-					break
-			}
-		})
+					case 'error':
+						stopTypingLoop()
+						if (streamTimer) {
+							clearTimeout(streamTimer)
+							streamTimer = null
+						}
+						if (context?.cronJobId && !cronMarked) {
+							cronService.markComplete(context.cronJobId, evt.message)
+							cronMarked = true
+						}
+						await send(chatId, `❌ ${evt.message}`)
+						break
+				}
+			})
 
 		session.on('exit', (code) => {
 			stopTypingLoop()
 			console.log(`[jsonl-bridge] Session exited with code ${code}`)
+			if (context?.cronJobId && !cronMarked) {
+				cronService.markComplete(context.cronJobId, `Process exited with code ${code}`)
+				cronMarked = true
+			}
 			sessionStore.delete(chatId)
 			// Flush queue after session ends
 			void flushQueue(chatId)
 		})
 
 		// Run with resume token if we have one
-		session.run(prompt, resumeToken)
+		const settings = getSettings()
+		session.run(prompt, resumeToken, { model: settings.model })
 	}
 
 	const flushQueue = async (chatId: number | string) => {
 		const next = sessionStore.dequeue(chatId)
 		if (!next) return
 		console.log(`[jsonl-bridge] Flushing queued message for ${chatId}`)
-		await processMessage(chatId, next.text)
+		await processMessage(chatId, next.text, next.context)
 	}
 
 	const handleMessage = async (message: IncomingMessage) => {
 		const { chatId, text, attachments, forward } = message
 		if (!text && !attachments?.length) return
+		const raw = typeof message.raw === 'object' && message.raw ? (message.raw as Record<string, unknown>) : undefined
+		const cronJobId = raw?.cron === true && typeof raw.jobId === 'string' ? raw.jobId : undefined
+		const context: MessageContext | undefined = cronJobId ? { source: 'cron', cronJobId } : undefined
+		if (!context?.cronJobId) {
+			void triggerHeartbeat()
+		}
 
 		// Build prompt with image paths if present
 		let prompt = text || ''
@@ -1425,12 +1500,27 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			prompt = `${forwardContext}\n${prompt}`
 		}
 		if (attachments?.length) {
-			const imagePaths = attachments
-				.filter(a => a.localPath)
-				.map(a => a.localPath)
-			if (imagePaths.length) {
-				const imageNote = imagePaths.map(p => `[Image: ${p}]`).join(' ')
-				prompt = prompt ? `${imageNote}\n\n${prompt}` : imageNote
+			const notes: string[] = []
+			for (const attachment of attachments) {
+				if (!attachment.localPath) continue
+				switch (attachment.type) {
+					case 'photo':
+						notes.push(`[Image: ${attachment.localPath}]`)
+						break
+					case 'document':
+						notes.push(`[File: ${attachment.localPath}]`)
+						break
+					case 'audio':
+						notes.push(`[Audio: ${attachment.localPath}]`)
+						break
+					case 'voice':
+						notes.push(`[Voice: ${attachment.localPath}]`)
+						break
+				}
+			}
+			if (notes.length) {
+				const attachmentNote = notes.join(' ')
+				prompt = prompt ? `${attachmentNote}\n\n${prompt}` : attachmentNote
 			}
 		}
 
@@ -1488,6 +1578,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			if ('async' in cmdResult && cmdResult.response === '__SPEC__') {
 				const task = prompt.slice(6).trim()
 				const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
+				const settings = persistentStore.getChatSettings(chatId)
 				void runNativeSpecMode({
 					chatId,
 					task,
@@ -1496,6 +1587,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					workingDirectory: config.workingDirectory,
 					gatewayUrl: config.gatewayUrl,
 					authToken: config.authToken,
+					model: settings.model,
 					send,
 					typing,
 					sessionStore,
@@ -1508,6 +1600,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				if (spawnCmd) {
 					// Inherit parent's CLI unless explicitly overridden
 					const activeCli = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
+					const settings = persistentStore.getChatSettings(chatId)
 					void spawnSubagent({
 						chatId,
 						task: spawnCmd.task,
@@ -1518,6 +1611,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						defaultCli: config.defaultCli,
 						subagentFallbackCli: config.subagentFallbackCli,
 						workingDirectory: config.workingDirectory,
+						model: settings.model,
 						send,
 					})
 					return
@@ -1544,6 +1638,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		if (naturalSpawn) {
 			console.log(`[jsonl-bridge] Natural language spawn detected: "${naturalSpawn.task.slice(0, 50)}..."`)
 			const activeCli = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
+			const settings = persistentStore.getChatSettings(chatId)
 			void spawnSubagent({
 				chatId,
 				task: naturalSpawn.task,
@@ -1554,6 +1649,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				defaultCli: config.defaultCli,
 				subagentFallbackCli: config.subagentFallbackCli,
 				workingDirectory: config.workingDirectory,
+				model: settings.model,
 				send,
 			})
 			return
@@ -1571,12 +1667,13 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				text: prompt,
 				attachments: attachments?.map(a => ({ localPath: a.localPath })),
 				createdAt: Date.now(),
+				context,
 			})
 			await send(chatId, `📥 Queued (${queueLen + 1} pending). Will process after current task.`)
 			return
 		}
 
-		await processMessage(chatId, prompt)
+		await processMessage(chatId, prompt, context)
 	}
 
 	const handleCallbackQuery = async (query: CallbackQuery) => {
@@ -1670,27 +1767,104 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		console.log('[jsonl-bridge] Connected to gateway')
 	})
 
-	// Handle cron job triggers
-	cronService.on('event', async (evt) => {
-		if (evt.type !== 'job:due') return
+	const runCronJobMain = async (job: CronJob): Promise<void> => {
 		if (!primaryChatId) {
 			console.log('[jsonl-bridge] Cron job due but no primary chat set')
 			return
 		}
-
-		console.log(`[jsonl-bridge] Cron job triggered: ${evt.job.name}`)
-		await send(primaryChatId, `⏰ Cron: ${evt.job.name}`)
-
-		// Send the job message as if it came from the user
+		const targetChatId = primaryChatId
+		console.log(`[jsonl-bridge] Cron job triggered: ${job.name}`)
+		await send(targetChatId, `⏰ Cron: ${job.name}`)
 		void handleMessage({
 			id: `cron-${Date.now()}`,
-			chatId: primaryChatId,
-			text: evt.job.message,
+			chatId: targetChatId,
+			text: job.message,
 			userId: 'cron',
 			messageId: 0,
 			timestamp: new Date().toISOString(),
-			raw: { cron: true, jobId: evt.job.id },
+			raw: { cron: true, jobId: job.id },
 		})
+	}
+
+	const runCronJobIsolated = async (job: CronJob): Promise<void> => {
+		if (!primaryChatId) {
+			console.log('[jsonl-bridge] Cron isolated job due but no primary chat set')
+			return
+		}
+		const targetChatId = primaryChatId
+
+		const manifest = manifests.get(config.defaultCli)
+		if (!manifest) {
+			await cronService.markIsolatedComplete(job.id, undefined, `CLI '${config.defaultCli}' not found`)
+			await send(targetChatId, `❌ Cron (isolated) failed: CLI '${config.defaultCli}' not found`)
+			return
+		}
+
+		await send(targetChatId, `⏰ Cron (isolated): ${job.name}`)
+
+		void enqueueCommandInLane(CommandLane.Cron, async () => {
+			const session = new JsonlSession(`cron-${job.id}-${Date.now()}`, manifest, config.workingDirectory)
+			let lastText = ''
+			let completed = false
+			const modelOverride = job.model ?? persistentStore.getChatSettings(targetChatId).model
+
+			const finish = async (summary?: string, error?: string) => {
+				if (completed) return
+				completed = true
+				await cronService.markIsolatedComplete(job.id, summary, error)
+				if (error) {
+					await send(targetChatId, `❌ Cron (isolated) failed: ${job.name}\n${error}`)
+				} else if (summary) {
+					await send(targetChatId, `✅ Cron (isolated) complete: ${job.name}\n\n${summary}`)
+				} else {
+					await send(targetChatId, `✅ Cron (isolated) complete: ${job.name}`)
+				}
+			}
+
+			return new Promise<void>((resolve) => {
+				session.on('event', (evt: BridgeEvent) => {
+					switch (evt.type) {
+						case 'text':
+							if (evt.text) lastText = evt.text
+							break
+						case 'completed': {
+							const summary = evt.answer || lastText
+							void finish(summary, evt.isError ? summary || 'error' : undefined).then(resolve)
+							break
+						}
+						case 'error':
+							void finish(undefined, evt.message).then(resolve)
+							break
+					}
+				})
+
+				session.on('exit', (code) => {
+					if (!completed) {
+						void finish(undefined, `Process exited with code ${code}`).then(resolve)
+					}
+				})
+
+				session.run(job.message, undefined, { model: modelOverride })
+			})
+		})
+	}
+
+	const triggerHeartbeat = async (): Promise<void> => {
+		const pending = cronService.flushPendingHeartbeat()
+		for (const job of pending) {
+			await runCronJobMain(job)
+		}
+	}
+
+	// Handle cron job triggers
+	cronService.on('event', async (evt) => {
+		if (evt.type === 'job:due') {
+			await runCronJobMain(evt.job)
+			return
+		}
+		if (evt.type === 'job:isolated') {
+			await runCronJobIsolated(evt.job)
+		}
 	})
 
 	return {

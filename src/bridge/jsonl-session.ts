@@ -112,7 +112,11 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		}
 	}
 
-	run(prompt: string, resume?: ResumeToken, options?: { specMode?: boolean }): void {
+	run(
+		prompt: string,
+		resume?: ResumeToken,
+		options?: { specMode?: boolean; model?: string }
+	): void {
 		if (this.process) {
 			console.log(`[jsonl-session] Process already running for ${this.chatId}`)
 			return
@@ -122,6 +126,17 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			if (!resume?.sessionId) return
 			const flag = this.manifest.resume?.flag ?? (this.cli === 'droid' ? '-s' : '--resume')
 			args.push(flag, resume.sessionId)
+		}
+		const appendWorkingDirArgs = (args: string[]) => {
+			if (!this.manifest.workingDirFlag) return
+			args.push(this.manifest.workingDirFlag, this.workingDir)
+		}
+		const appendModelArgs = (args: string[]) => {
+			const modelConfig = this.manifest.model
+			if (!modelConfig?.flag) return
+			const modelId = options?.model ?? modelConfig.default
+			if (!modelId) return
+			args.push(modelConfig.flag, modelId)
 		}
 
 		let args: string[]
@@ -137,6 +152,8 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				...this.manifest.args,
 			]
 			appendResumeArgs(args)
+			appendWorkingDirArgs(args)
+			appendModelArgs(args)
 			// Add spec mode flag if enabled and configured
 			if (options?.specMode && this.manifest.specMode?.flag) {
 				const flagParts = this.manifest.specMode.flag.split(' ')
@@ -152,6 +169,8 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				...this.manifest.args,
 			]
 			appendResumeArgs(args)
+			appendWorkingDirArgs(args)
+			appendModelArgs(args)
 			// Add spec mode flag if enabled and configured
 			if (options?.specMode && this.manifest.specMode?.flag) {
 				const flagParts = this.manifest.specMode.flag.split(' ')
@@ -434,6 +453,7 @@ export type QueuedMessage = {
 	text: string
 	attachments?: Array<{ localPath?: string }>
 	createdAt: number
+	context?: { source?: 'user' | 'cron'; cronJobId?: string }
 }
 
 export type SessionStore = {
