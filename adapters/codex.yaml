@@ -1,0 +1,14 @@
+name: codex
+command: codex
+args:
+  - exec
+  - --json
+  - --dangerously-bypass-approvals-and-sandbox
+  - --skip-git-repo-check
+inputMode: arg
+
+workingDirFlag: --cd
+
+model:
+  flag: --model
+  default: gpt-5.2

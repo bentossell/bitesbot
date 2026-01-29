@@ -153,6 +153,13 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			appendWorkingDirArgs(args)
 			appendModelArgs(args)
 			args.push(prompt)
+		} else if (this.cli === 'codex') {
+			// Codex uses: codex exec --json --dangerously-bypass-approvals-and-sandbox "prompt"
+			args = [...this.manifest.args]
+			appendWorkingDirArgs(args)
+			appendModelArgs(args)
+			appendResumeArgs(args)
+			args.push(prompt)
 		} else {
 			// Claude uses: claude -p --output-format stream-json --verbose "prompt"
 			args = [
