@@ -1,0 +1,12 @@
+name: pi
+command: pi
+args: []
+inputMode: jsonl
+
+resume:
+  flag: --session
+  sessionArg: last
+
+model:
+  flag: --model
+  default: claude-sonnet-4-5-20250929

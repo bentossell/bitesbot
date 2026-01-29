@@ -122,7 +122,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 	if (trimmed.startsWith('/model')) {
 		const arg = trimmed.slice(6).trim().toLowerCase()
 		if (!arg) {
-			return { handled: true, response: 'Usage: /model <alias>\nAliases: opus, sonnet, haiku, codex\nFull IDs also supported (e.g., claude-opus-4-5-20251101)' }
+			return { handled: true, response: 'Usage: /model <alias>\nAliases: opus, sonnet, haiku, codex, pi\nFull IDs also supported (e.g., claude-opus-4-5-20251101)' }
 		}
 		// Model alias mappings (based on CLI docs)
 		const modelAliases: Record<string, string> = {
@@ -136,6 +136,10 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 			// Gemini
 			gemini: 'gemini-3-pro-preview',
 			'gemini-flash': 'gemini-3-flash-preview',
+			// Pi (uses same model IDs as underlying providers)
+			pi: 'claude-sonnet-4-5-20250929',
+			'pi-opus': 'claude-opus-4-5-20251101',
+			'pi-haiku': 'claude-haiku-4-5-20251001',
 		}
 		const modelId = modelAliases[arg] || arg
 		// Store model preference (will be passed to CLI on next session)
