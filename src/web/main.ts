@@ -79,6 +79,11 @@ function generateSessionId(): string {
     return id
 }
 
+// Gateway URL helper - use same base for WebSocket and HTTP endpoints
+function getGatewayBaseUrl(): string {
+    return `${window.location.protocol}//${window.location.host}`
+}
+
 // WebSocket connection
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -522,7 +527,7 @@ async function sendWithFiles(text: string, attachments: FileAttachment[]) {
         }
     }
 
-    const response = await fetch('/web/upload', {
+    const response = await fetch(`${getGatewayBaseUrl()}/web/upload`, {
         method: 'POST',
         body: formData,
     })

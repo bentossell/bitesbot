@@ -3,7 +3,7 @@ import type { IncomingMessage as HttpIncomingMessage, ServerResponse } from 'nod
 import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdir, stat, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, basename, extname, resolve } from 'node:path'
+import { join, basename, extname, resolve, relative, isAbsolute } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { Bot, InputFile } from 'grammy'
@@ -351,7 +351,9 @@ export const startGatewayServer = async (config: GatewayConfig, options: Gateway
 				// Security: prevent directory traversal by resolving and checking the path
 				const resolvedPath = resolve(filePath)
 				const resolvedWebDir = resolve(webDir)
-				if (!resolvedPath.startsWith(resolvedWebDir)) {
+				const relPath = relative(resolvedWebDir, resolvedPath)
+				// Reject if relative path escapes the web directory (starts with ..) or is absolute
+				if (relPath.startsWith('..') || isAbsolute(relPath)) {
 					sendJson(res, 403, { ok: false, error: 'forbidden' })
 					return
 				}
@@ -440,7 +442,9 @@ export const startGatewayServer = async (config: GatewayConfig, options: Gateway
 					return
 				}
 
-				const boundary = contentType.split('boundary=')[1]
+				// Extract boundary, handling trailing parameters (e.g., "; charset=utf-8") and optional quotes
+				const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;\s]+))/)
+				const boundary = boundaryMatch?.[1] || boundaryMatch?.[2]
 				if (!boundary) {
 					sendJson(res, 400, { ok: false, error: 'missing boundary' })
 					return
