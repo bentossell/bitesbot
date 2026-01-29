@@ -244,7 +244,7 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 					photoUrl: payload?.photoUrl,
 					documentUrl: payload?.documentUrl,
 					errorDetails: preview,
-				})
+				}).catch(() => {})
 				broadcast({ type: 'error', payload: { message } })
 				sendJson(res, 400, { ok: false, error: message })
 			}
@@ -301,7 +301,7 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 		// Filter by allowed chat IDs if configured
 		if (config.allowedChatIds && config.allowedChatIds.length > 0) {
 			if (!config.allowedChatIds.includes(chatId)) {
-				void logToFile('info', 'callback ignored from unauthorized chat', { chatId })
+				void logToFile('info', 'callback ignored from unauthorized chat', { chatId }).catch(() => {})
 				return
 			}
 		}
@@ -328,7 +328,7 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 		// Filter by allowed chat IDs if configured
 		if (config.allowedChatIds && config.allowedChatIds.length > 0) {
 			if (!config.allowedChatIds.includes(chatId)) {
-				void logToFile('info', 'message ignored from unauthorized chat', { chatId })
+				void logToFile('info', 'message ignored from unauthorized chat', { chatId }).catch(() => {})
 				return
 			}
 		}
@@ -343,10 +343,10 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 				try {
 					const localPath = await downloadTelegramFile(bot, attachment.fileId, attachment.type)
 					attachment.localPath = localPath
-					void logToFile('info', 'downloaded attachment', { fileId: attachment.fileId, localPath })
+					void logToFile('info', 'downloaded attachment', { fileId: attachment.fileId, localPath }).catch(() => {})
 				} catch (err) {
 					const message = err instanceof Error ? err.message : 'unknown error'
-					void logToFile('error', 'failed to download attachment', { fileId: attachment.fileId, error: message })
+					void logToFile('error', 'failed to download attachment', { fileId: attachment.fileId, error: message }).catch(() => {})
 				}
 			}
 		}
@@ -362,7 +362,7 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 							: transcriptText
 					} catch (err) {
 						const errMsg = err instanceof Error ? err.message : 'unknown error'
-						void logToFile('error', 'voice transcription failed', { fileId: attachment.fileId, error: errMsg })
+						void logToFile('error', 'voice transcription failed', { fileId: attachment.fileId, error: errMsg }).catch(() => {})
 						normalized.text = normalized.text
 							? `[Voice note - transcription failed: ${errMsg}]\n\n${normalized.text}`
 							: `[Voice note - transcription failed: ${errMsg}]`
@@ -375,7 +375,7 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 	})
 
 	bot.catch((error) => {
-		void logToFile('error', 'bot error', { error: error.message })
+		void logToFile('error', 'bot error', { error: error.message }).catch(() => {})
 		broadcast({ type: 'error', payload: { message: error.message } })
 	})
 
@@ -383,7 +383,7 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 		server.listen(config.port, config.host, () => resolve())
 	})
 
-	void bot.start()
+	void bot.start().catch(() => {})
 
 	const notifyRestart = async () => {
 		// Use allowedChatIds from config, or fall back to lastActiveChatId

@@ -509,12 +509,12 @@ const sendToGateway = async (
 				status: response.status,
 				chatId,
 				body: body.slice(0, 1000),
-			})
+			}).catch(() => {})
 		}
 	} catch (err) {
 		console.error(`[jsonl-bridge] Failed to send message:`, err)
 		const message = err instanceof Error ? err.message : 'unknown error'
-		void logToFile('error', 'bridge send failed', { error: message, chatId })
+		void logToFile('error', 'bridge send failed', { error: message, chatId }).catch(() => {})
 	}
 }
 
@@ -566,14 +566,14 @@ const sendFileToGateway = async (
 				chatId,
 				filePath,
 				body: body.slice(0, 1000),
-			})
+			}).catch(() => {})
 			return false
 		}
 		return true
 	} catch (err) {
 		console.error(`[jsonl-bridge] Failed to send file:`, err)
 		const message = err instanceof Error ? err.message : 'unknown error'
-		void logToFile('error', 'bridge send file failed', { error: message, chatId, filePath })
+		void logToFile('error', 'bridge send file failed', { error: message, chatId, filePath }).catch(() => {})
 		return false
 	}
 }
