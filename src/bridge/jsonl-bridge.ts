@@ -62,6 +62,7 @@ export type BridgeConfig = {
 	authToken?: string
 	adaptersDir: string
 	defaultCli: string
+	subagentFallbackCli?: string
 	workingDirectory: string
 	allowedChatIds?: number[]
 }
@@ -964,15 +965,28 @@ type SpawnSubagentOptions = {
 	task: string
 	label?: string
 	cli?: string
+	explicitCli?: boolean
 	manifests: Map<string, CLIManifest>
 	defaultCli: string
+	subagentFallbackCli?: string
 	workingDirectory: string
 	send: (chatId: number | string, text: string) => Promise<void>
 }
 
 const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 	const { chatId, task, label, manifests, defaultCli, workingDirectory, send } = opts
-	const cliName = opts.cli || defaultCli
+	const requestedCli = opts.cli || defaultCli
+	let cliName = requestedCli
+	let usedFallback = false
+
+	if (!opts.explicitCli && requestedCli === 'droid' && opts.subagentFallbackCli) {
+		if (manifests.has(opts.subagentFallbackCli)) {
+			cliName = opts.subagentFallbackCli
+			usedFallback = true
+		} else {
+			await send(chatId, `⚠️ Subagent fallback CLI not found: ${opts.subagentFallbackCli}. Using droid.`)
+		}
+	}
 
 	// Check concurrency limit
 	if (!subagentRegistry.canSpawn(chatId)) {
@@ -996,7 +1010,8 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 
 	const displayName = label || `Subagent #${record.runId.slice(0, 8)}`
 	// Send spawn confirmation immediately - subagent runs in background
-	await send(chatId, `🚀 Spawned: ${displayName}\n   CLI: ${cliName}\n   Task: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''}`)
+	const fallbackNote = usedFallback ? ` (fallback from ${requestedCli})` : ''
+	await send(chatId, `🚀 Spawned: ${displayName}\n   CLI: ${cliName}${fallbackNote}\n   Task: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''}`)
 
 	console.log(`[jsonl-bridge] Spawning subagent ${record.runId} with ${cliName}: "${task.slice(0, 50)}..."`)
 
@@ -1506,8 +1521,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						task: spawnCmd.task,
 						label: spawnCmd.label,
 						cli: spawnCmd.cli || activeCli,
+						explicitCli: Boolean(spawnCmd.cli),
 						manifests,
 						defaultCli: config.defaultCli,
+						subagentFallbackCli: config.subagentFallbackCli,
 						workingDirectory: config.workingDirectory,
 						send,
 					})
@@ -1540,8 +1557,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				task: naturalSpawn.task,
 				label: naturalSpawn.label,
 				cli: naturalSpawn.cli || activeCli,
+				explicitCli: Boolean(naturalSpawn.cli),
 				manifests,
 				defaultCli: config.defaultCli,
+				subagentFallbackCli: config.subagentFallbackCli,
 				workingDirectory: config.workingDirectory,
 				send,
 			})
@@ -1689,7 +1708,16 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		label?: string
 		cli?: string
 	}): Promise<{ runId: string; status: string }> => {
-		const cliName = opts.cli || config.defaultCli
+		const requestedCli = opts.cli || config.defaultCli
+		let cliName = requestedCli
+		let usedFallback = false
+
+		if (!opts.cli && requestedCli === 'droid' && config.subagentFallbackCli) {
+			if (manifests.has(config.subagentFallbackCli)) {
+				cliName = config.subagentFallbackCli
+				usedFallback = true
+			}
+		}
 
 		// Check concurrency limit
 		if (!subagentRegistry.canSpawn(opts.chatId)) {
@@ -1711,7 +1739,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 		const displayName = opts.label || `Subagent #${record.runId.slice(0, 8)}`
 		// Send spawn confirmation immediately
-		await send(opts.chatId, `🚀 Spawned: ${displayName}\n   CLI: ${cliName}\n   Task: ${opts.task.slice(0, 100)}${opts.task.length > 100 ? '...' : ''}`)
+		const fallbackNote = usedFallback ? ` (fallback from ${requestedCli})` : ''
+		await send(opts.chatId, `🚀 Spawned: ${displayName}\n   CLI: ${cliName}${fallbackNote}\n   Task: ${opts.task.slice(0, 100)}${opts.task.length > 100 ? '...' : ''}`)
 
 		console.log(`[jsonl-bridge] MCP spawning subagent ${record.runId} with ${cliName}: "${opts.task.slice(0, 50)}..."`)
 

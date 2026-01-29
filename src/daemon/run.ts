@@ -35,6 +35,7 @@ export const runGateway = async (options: RunOptions = {}) => {
 			authToken: config.authToken,
 			adaptersDir: config.bridge.adaptersDir,
 			defaultCli: config.bridge.defaultCli,
+			subagentFallbackCli: config.bridge.subagentFallbackCli,
 			workingDirectory: config.bridge.workingDirectory,
 			allowedChatIds: config.allowedChatIds,
 		})

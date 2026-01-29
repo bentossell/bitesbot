@@ -63,7 +63,7 @@ export const executeSessionsSpawn = async (
 			chatId,
 			task,
 			label,
-			cli: cli || ctx.defaultCli,
+			cli,
 		})
 
 		return {

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 export type BridgeConfig = {
 	enabled: boolean
 	defaultCli: string
+	subagentFallbackCli?: string
 	workingDirectory: string
 	adaptersDir: string
 }
@@ -73,6 +74,7 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 	const bridge: BridgeConfig = {
 		enabled: env.TG_GATEWAY_BRIDGE_ENABLED === 'true' || fileBridge.enabled === true,
 		defaultCli: env.TG_GATEWAY_DEFAULT_CLI ?? fileBridge.defaultCli ?? 'claude',
+		subagentFallbackCli: env.TG_GATEWAY_SUBAGENT_FALLBACK_CLI ?? fileBridge.subagentFallbackCli,
 		workingDirectory: env.TG_GATEWAY_WORKING_DIR ?? fileBridge.workingDirectory ?? process.cwd(),
 		adaptersDir: env.TG_GATEWAY_ADAPTERS_DIR ?? fileBridge.adaptersDir ?? join(process.cwd(), 'adapters'),
 	}
