@@ -34,6 +34,9 @@ type SessionLogEntry = {
 	text: string
 	sessionId?: string
 	cli?: string
+	isSubagent?: boolean
+	subagentRunId?: string
+	parentSessionId?: string
 }
 
 const DEFAULT_STORE: ResumeTokenStore = { version: 1, tokens: {}, activeCli: {}, chatSettings: {} }
@@ -54,12 +57,32 @@ export const saveResumeTokens = async (store: ResumeTokenStore): Promise<void> =
 	await writeFile(RESUME_TOKENS_PATH, JSON.stringify(store, null, 2), 'utf-8')
 }
 
+const formatTranscriptEntry = (entry: SessionLogEntry): string => {
+	const timestamp = entry.timestamp || new Date().toISOString()
+	const metaParts = [`chat:${entry.chatId}`]
+	if (entry.cli) metaParts.push(`cli:${entry.cli}`)
+	if (entry.sessionId) metaParts.push(`session:${entry.sessionId}`)
+	if (entry.isSubagent) {
+		const subagentTag = entry.subagentRunId ? `subagent:${entry.subagentRunId}` : 'subagent:true'
+		metaParts.push(subagentTag)
+	}
+	if (entry.parentSessionId) metaParts.push(`parent:${entry.parentSessionId}`)
+	const meta = metaParts.length ? ` (${metaParts.join(' ')})` : ''
+	const header = `### ${timestamp}${meta}`
+	const roleLabel = entry.role.toUpperCase()
+	const text = entry.text ?? ''
+	const quoted = text.split('\n').map(line => `> ${line}`).join('\n')
+	return `${header}\n**${roleLabel}**\n${quoted}\n\n`
+}
+
 export const logSessionMessage = async (entry: SessionLogEntry): Promise<void> => {
-	const date = new Date().toISOString().split('T')[0] // YYYY-MM-DD
+	const date = new Date(entry.timestamp || Date.now()).toISOString().split('T')[0] // YYYY-MM-DD
 	const logPath = join(SESSIONS_DIR, `${date}.jsonl`)
+	const transcriptPath = join(SESSIONS_DIR, `${date}.md`)
 	
 	await mkdir(SESSIONS_DIR, { recursive: true })
 	await appendFile(logPath, JSON.stringify(entry) + '\n', 'utf-8')
+	await appendFile(transcriptPath, formatTranscriptEntry(entry), 'utf-8')
 }
 
 export type PersistentSessionStore = {
@@ -73,7 +96,14 @@ export type PersistentSessionStore = {
 	setActiveCli: (chatId: number | string, cli: string) => Promise<void>
 	getChatSettings: (chatId: number | string) => ChatSettings
 	setChatSettings: (chatId: number | string, settings: Partial<ChatSettings>) => Promise<void>
-	logMessage: (chatId: number | string, role: 'user' | 'assistant', text: string, sessionId?: string, cli?: string) => Promise<void>
+	logMessage: (
+		chatId: number | string,
+		role: 'user' | 'assistant' | 'system',
+		text: string,
+		sessionId?: string,
+		cli?: string,
+		meta?: Pick<SessionLogEntry, 'isSubagent' | 'subagentRunId' | 'parentSessionId'>
+	) => Promise<void>
 }
 
 export const createPersistentSessionStore = async (): Promise<PersistentSessionStore> => {
@@ -125,7 +155,7 @@ export const createPersistentSessionStore = async (): Promise<PersistentSessionS
 			await persist()
 		},
 		
-		logMessage: async (chatId, role, text, sessionId, cli) => {
+		logMessage: async (chatId, role, text, sessionId, cli, meta) => {
 			await logSessionMessage({
 				timestamp: new Date().toISOString(),
 				chatId,
@@ -133,6 +163,7 @@ export const createPersistentSessionStore = async (): Promise<PersistentSessionS
 				text,
 				sessionId,
 				cli,
+				...meta,
 			})
 		},
 	}

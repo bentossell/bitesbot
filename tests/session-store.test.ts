@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createSessionStore } from '../src/bridge/jsonl-session.js'
+import { logSessionMessage, setWorkspaceDir } from '../src/bridge/session-store.js'
 
 describe('createSessionStore', () => {
 	describe('session management', () => {
@@ -138,6 +142,42 @@ describe('createSessionStore', () => {
 			
 			expect(store.dequeue(111)?.text).toBe('chat1')
 			expect(store.dequeue(222)?.text).toBe('chat2')
+		})
+	})
+
+	describe('session logging', () => {
+		it('writes subagent entries to jsonl and markdown transcripts', async () => {
+			const workspaceDir = await mkdtemp(join(tmpdir(), 'tg-gateway-'))
+			setWorkspaceDir(workspaceDir)
+
+			const entry = {
+				timestamp: '2026-01-29T12:00:00.000Z',
+				chatId: 42,
+				role: 'assistant' as const,
+				text: 'Subagent result',
+				sessionId: 'sess-123',
+				cli: 'claude',
+				isSubagent: true,
+				subagentRunId: 'run-abc',
+				parentSessionId: 'parent-1',
+			}
+
+			await logSessionMessage(entry)
+
+			const date = entry.timestamp.split('T')[0]
+			const jsonlPath = join(workspaceDir, 'sessions', `${date}.jsonl`)
+			const mdPath = join(workspaceDir, 'sessions', `${date}.md`)
+
+			const jsonl = await readFile(jsonlPath, 'utf-8')
+			const parsed = JSON.parse(jsonl.trim())
+			expect(parsed.isSubagent).toBe(true)
+			expect(parsed.subagentRunId).toBe('run-abc')
+
+			const md = await readFile(mdPath, 'utf-8')
+			expect(md).toContain('subagent:run-abc')
+			expect(md).toContain('Subagent result')
+
+			await rm(workspaceDir, { recursive: true, force: true })
 		})
 	})
 })

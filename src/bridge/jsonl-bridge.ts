@@ -47,6 +47,8 @@ import {
 	setPendingPlan,
 	detectIntent,
 } from './spec-mode-store.js'
+import { buildMemoryRecall } from '../memory/recall.js'
+import type { MemoryConfig } from '../memory/types.js'
 import { createConceptsIndex, getRelatedFilesForTerms } from '../workspace/concepts-index.js'
 import {
 	extractConceptsFromText,
@@ -67,6 +69,7 @@ export type BridgeConfig = {
 	subagentFallbackCli?: string
 	workingDirectory: string
 	allowedChatIds?: number[]
+	memory?: MemoryConfig
 }
 
 export type BridgeHandle = {
@@ -967,6 +970,15 @@ type SpawnSubagentOptions = {
 	workingDirectory: string
 	model?: string
 	send: (chatId: number | string, text: string) => Promise<void>
+	logMessage?: (
+		chatId: number | string,
+		role: 'user' | 'assistant' | 'system',
+		text: string,
+		sessionId?: string,
+		cli?: string,
+		meta?: { isSubagent?: boolean; subagentRunId?: string; parentSessionId?: string }
+	) => Promise<void>
+	parentSessionId?: string
 }
 
 type SpawnSubagentInternalOptions = SpawnSubagentOptions & {
@@ -1010,7 +1022,16 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 		task,
 		cli: cliName,
 		label,
+		parentSessionId: opts.parentSessionId,
 	})
+
+	if (opts.logMessage) {
+		void opts.logMessage(chatId, 'user', task, undefined, cliName, {
+			isSubagent: true,
+			subagentRunId: record.runId,
+			parentSessionId: opts.parentSessionId,
+		})
+	}
 
 	const displayName = label || `Subagent #${record.runId.slice(0, 8)}`
 	// Send spawn confirmation immediately - subagent runs in background
@@ -1025,6 +1046,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 		const session = new JsonlSession(`subagent-${record.runId}`, manifest, workingDirectory, { isSubagent: true })
 
 		let lastText = ''
+		let loggedFinal = false
 
 		return new Promise<void>((resolve) => {
 			session.on('event', (evt: BridgeEvent) => {
@@ -1043,6 +1065,14 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 					case 'completed':
 						console.log(`[jsonl-bridge] Subagent ${record.runId} completed`)
 						subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
+						if (opts.logMessage) {
+							loggedFinal = true
+							void opts.logMessage(chatId, 'assistant', evt.answer || lastText, evt.sessionId, cliName, {
+								isSubagent: true,
+								subagentRunId: record.runId,
+								parentSessionId: opts.parentSessionId,
+							})
+						}
 						// Announce completion
 						void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
 						// Prune old runs and persist
@@ -1053,6 +1083,14 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 					case 'error':
 						console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
 						subagentRegistry.markError(record.runId, evt.message)
+						if (opts.logMessage && !loggedFinal) {
+							loggedFinal = true
+							void opts.logMessage(chatId, 'system', evt.message, record.childSessionId, cliName, {
+								isSubagent: true,
+								subagentRunId: record.runId,
+								parentSessionId: opts.parentSessionId,
+							})
+						}
 						void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
 						void saveSubagentRegistry()
 						break
@@ -1066,6 +1104,14 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 				if (current && current.status === 'running') {
 					subagentRegistry.markError(record.runId, `Process exited with code ${code}`)
 					void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
+					if (opts.logMessage && !loggedFinal) {
+						loggedFinal = true
+						void opts.logMessage(chatId, 'system', `Process exited with code ${code}`, current.childSessionId, cliName, {
+							isSubagent: true,
+							subagentRunId: record.runId,
+							parentSessionId: opts.parentSessionId,
+						})
+					}
 				}
 				resolve()
 			})
@@ -1178,6 +1224,18 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		if (pendingResults) {
 			prompt = `${pendingResults}\n\n${prompt}`
 			console.log(`[jsonl-bridge] Injected subagent results into prompt`)
+		}
+
+		if (config.memory?.enabled) {
+			try {
+				const memoryRecall = await buildMemoryRecall(originalPrompt, config.memory)
+				if (memoryRecall) {
+					prompt = `${memoryRecall}\n\n${prompt}`
+				}
+			} catch (err) {
+				const message = err instanceof Error ? err.message : 'unknown error'
+				console.error('[jsonl-bridge] Failed to build memory recall:', message)
+			}
 		}
 
 		const relatedContext = await buildRelatedContext(originalPrompt)
@@ -1613,6 +1671,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						workingDirectory: config.workingDirectory,
 						model: settings.model,
 						send,
+						logMessage: persistentStore.logMessage,
 					})
 					return
 				}
@@ -1651,6 +1710,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				workingDirectory: config.workingDirectory,
 				model: settings.model,
 				send,
+				logMessage: persistentStore.logMessage,
 			})
 			return
 		}

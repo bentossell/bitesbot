@@ -8,6 +8,9 @@ type SessionLogEntry = {
 	text: string
 	sessionId?: string
 	cli?: string
+	isSubagent?: boolean
+	subagentRunId?: string
+	parentSessionId?: string
 }
 
 /**
@@ -88,8 +91,9 @@ const formatSection = (entries: SessionLogEntry[]): string => {
 	const lines = [`## ${timeStr} UTC (${cli})`]
 	
 	// Summarize the conversation - just key points
-	const userMessages = entries.filter(e => e.role === 'user')
+	const userMessages = entries.filter(e => e.role === 'user' && !e.isSubagent)
 	const assistantMessages = entries.filter(e => e.role === 'assistant')
+	const subagentMessages = entries.filter(e => e.isSubagent)
 	
 	// Add user queries (truncated)
 	for (const msg of userMessages.slice(0, 5)) {
@@ -107,6 +111,18 @@ const formatSection = (entries: SessionLogEntry[]): string => {
 			? lastAssistant.text.slice(0, 500) + '...' 
 			: lastAssistant.text
 		lines.push(`\n**Assistant:** ${preview}`)
+	}
+
+	// Add subagent highlights (truncated)
+	if (subagentMessages.length > 0) {
+		for (const msg of subagentMessages.slice(0, 3)) {
+			const label = msg.subagentRunId ? `Subagent ${msg.subagentRunId.slice(0, 8)}` : 'Subagent'
+			const preview = msg.text.length > 300 ? msg.text.slice(0, 300) + '...' : msg.text
+			lines.push(`\n**${label}:** ${preview}`)
+		}
+		if (subagentMessages.length > 3) {
+			lines.push(`\n... and ${subagentMessages.length - 3} more subagent messages`)
+		}
 	}
 	
 	return lines.join('\n')
