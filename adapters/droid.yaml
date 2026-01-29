@@ -11,6 +11,3 @@ resume:
 model:
   flag: --model
   default: opus
-
-specMode:
-  flag: --use-spec

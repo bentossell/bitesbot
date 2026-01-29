@@ -21,8 +21,6 @@ workingDirFlag: --cwd
 resume:
   flag: --resume
   sessionArg: last
-specMode:
-  flag: --spec
 `)
 		
 		try {
@@ -33,7 +31,6 @@ specMode:
 			expect(manifest.inputMode).toBe('arg')
 			expect(manifest.workingDirFlag).toBe('--cwd')
 			expect(manifest.resume).toEqual({ flag: '--resume', sessionArg: 'last' })
-			expect(manifest.specMode).toEqual({ flag: '--spec' })
 		} finally {
 			await rm(tempDir, { recursive: true })
 		}

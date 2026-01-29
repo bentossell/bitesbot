@@ -21,7 +21,7 @@ Key fields:
 - `args` - array of fixed args
 - `inputMode` - `jsonl`, `stdin`, or `arg`
 - `workingDirFlag` - optional flag for working directory
-- `resume`, `model`, `specMode` - optional flags for resume/model/spec
+- `resume`, `model` - optional flags for resume/model
 
 ## Telegram commands
 
@@ -44,9 +44,7 @@ Concepts:
 - `/file <path>` - concepts found in a file
 - `/aliases list|add <alias> <canonical>|remove <alias>` - manage concept aliases
 
-Planning and subagents:
-
-- `/spec <task>` - request a plan for approval
+Subagents:
 - `/spawn ...` - spawn a subagent (see command help)
 - `/subagents` - list/stop/log subagents
 

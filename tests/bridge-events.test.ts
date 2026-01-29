@@ -79,21 +79,6 @@ describe('jsonl-session event translation', () => {
 		})
 	})
 
-	it('emits spec_plan for ExitSpecMode tool', () => {
-		const session = createSession('claude')
-		const events: BridgeEvent[] = []
-		session.on('event', (evt) => events.push(evt))
-
-		const translate = getTranslate(session)
-		translate({
-			type: 'assistant',
-			message: { content: [{ type: 'tool_use', id: 'tool-2', name: 'ExitSpecMode', input: { plan: 'My plan' } }] },
-		})
-
-		expect(events[0]).toEqual({ type: 'tool_start', toolId: 'tool-2', name: 'ExitSpecMode', input: { plan: 'My plan' } })
-		expect(events[1]).toEqual({ type: 'spec_plan', plan: 'My plan' })
-	})
-
 	it('translates Droid events', () => {
 		const session = createSession('droid')
 		const events: BridgeEvent[] = []
@@ -113,15 +98,16 @@ describe('jsonl-session event translation', () => {
 		expect(events[4]).toEqual({ type: 'completed', sessionId: 'droid-sess', answer: 'final', isError: false })
 	})
 
-	it('emits spec_plan for Droid ExitSpecMode tool', () => {
+	it('translates Droid tool start/end', () => {
 		const session = createSession('droid')
 		const events: BridgeEvent[] = []
 		session.on('event', (evt) => events.push(evt))
 
 		const translate = getTranslate(session)
-		translate({ type: 'tool_start', tool: 'ExitSpecMode', id: 'tool-4', input: { plan: 'Droid plan' } })
+		translate({ type: 'tool_start', tool: 'Read', id: 'tool-4', input: { path: 'file' } })
+		translate({ type: 'tool_end', id: 'tool-4', output: 'done' })
 
-		expect(events[0]).toEqual({ type: 'tool_start', toolId: 'tool-4', name: 'ExitSpecMode', input: { plan: 'Droid plan' } })
-		expect(events[1]).toEqual({ type: 'spec_plan', plan: 'Droid plan' })
+		expect(events[0]).toEqual({ type: 'tool_start', toolId: 'tool-4', name: 'Read', input: { path: 'file' } })
+		expect(events[1]).toEqual({ type: 'tool_end', toolId: 'tool-4', isError: false, preview: 'done' })
 	})
 })

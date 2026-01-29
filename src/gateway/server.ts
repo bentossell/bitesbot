@@ -182,7 +182,6 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			{ command: 'use', description: 'Switch CLI (claude/droid)' },
 			{ command: 'stream', description: 'Toggle streaming output' },
 			{ command: 'verbose', description: 'Toggle tool output' },
-			{ command: 'spec', description: 'Create plan for approval' },
 			{ command: 'cron', description: 'Manage scheduled jobs' },
 		])
 	} catch {

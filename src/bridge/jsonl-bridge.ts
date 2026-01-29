@@ -1358,16 +1358,16 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		await processMessage(chatId, prompt, context)
 	}
 
-		ws.on('message', (data) => {
-			try {
-				const event = JSON.parse(data.toString()) as GatewayEvent
-				if (event.type === 'message.received') {
-					void handleMessage(event.payload)
-				}
-			} catch {
-				// ignore
+	ws.on('message', (data) => {
+		try {
+			const event = JSON.parse(data.toString()) as GatewayEvent
+			if (event.type === 'message.received') {
+				void handleMessage(event.payload)
 			}
-		})
+		} catch {
+			// ignore
+		}
+	})
 
 	ws.on('error', (err) => {
 		console.error('[jsonl-bridge] WebSocket error:', err.message)

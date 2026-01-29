@@ -9,7 +9,6 @@
 ## Entry points
 
 - `src/protocol/types.ts` - events, messages, and protocol version
-- `src/protocol/plan-types.ts` - plan approval payloads
 
 ## Gotchas
 

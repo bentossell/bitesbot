@@ -17,12 +17,10 @@
 - `src/bridge/session-store.ts` - session persistence and resume
 - `src/bridge/command-queue.ts` - per-chat queues
 - `src/bridge/subagent-*.ts` - subagent registry and commands
-- `src/bridge/plan-approval-store.ts` - plan approvals
-- `src/bridge/spec-mode-store.ts` - spec mode detection
 - `src/bridge/memory-sync.ts` - session -> memory sync
 
 ## Gotchas
 
-- Commands like `/new`, `/stop`, `/interrupt`, `/spec`, `/spawn`, `/cron` are handled here.
+- Commands like `/new`, `/stop`, `/interrupt`, `/spawn`, `/cron` are handled here.
 - Manifests are only loaded if the CLI binary exists on the host.
 - Streaming vs non-streaming output is stored in the persistent session store.
