@@ -3,8 +3,9 @@ import { TelegramClient, sessions } from 'telegram'
 import WebSocket, { type RawData } from 'ws'
 import { setTimeout as delay } from 'node:timers/promises'
 import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { startGatewayServer, type GatewayServerHandle } from '../src/gateway/server.js'
 import { startBridge, type BridgeHandle } from '../src/bridge/index.js'
 import type { GatewayEvent } from '../src/protocol/types.js'
@@ -17,6 +18,7 @@ const botUsernameRaw = process.env.TG_E2E_BOT_USERNAME ?? ''
 const authToken = process.env.TG_E2E_AUTH_TOKEN
 const allowedChatIdEnv = process.env.TG_E2E_ALLOWED_CHAT_ID
 const gatewayPortRaw = process.env.TG_E2E_GATEWAY_PORT
+const hasDroid = existsSync(join(homedir(), '.local/bin/droid'))
 
 const botUsername = botUsernameRaw
 	? botUsernameRaw.startsWith('@') ? botUsernameRaw : `@${botUsernameRaw}`
@@ -25,7 +27,7 @@ const botUsername = botUsernameRaw
 const gatewayPort = Number(gatewayPortRaw ?? '8790')
 const hasEnv = Boolean(apiId && apiHash && sessionStr && botToken && botUsername)
 const isCI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS)
-const shouldRun = hasEnv && !isCI // Skip in remote CI - local only
+const shouldRun = hasEnv && !isCI && process.env.TG_E2E_RUN === '1'
 const TIMEOUT_MS = 120_000
 const SHORT_TIMEOUT = 30_000
 const LONG_TIMEOUT = 180_000 // For tests that involve AI responses
@@ -282,6 +284,33 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 	// FUNCTIONAL TESTS - verify actual behavior
 	// ============================================
 
+	it.skipIf(!hasDroid)('spawns a droid subagent while main droid session responds', async () => {
+		const token = `${Date.now()}`
+		const label = `Subagent-${token}`
+
+		await client.sendMessage(botUsername, { message: '/use droid' })
+		await waitForBotMessage(client, botUsername, 'Switched to droid.', SHORT_TIMEOUT)
+
+		const mainPrompt = `Main-${token}: Reply with exactly "main-${token}:4".`
+		await client.sendMessage(botUsername, { message: mainPrompt })
+		const mainReply = await waitForBotMessageContaining(client, botUsername, `main-${token}:4`, LONG_TIMEOUT)
+		expect(mainReply).toContain(`main-${token}:4`)
+
+		const spawnPrompt = `/spawn --label "${label}" "Reply with exactly sub-${token}:42."`
+		await client.sendMessage(botUsername, { message: spawnPrompt })
+		const spawnAck = await waitForBotMessageContaining(client, botUsername, `🚀 Spawned: ${label}`, LONG_TIMEOUT)
+		expect(spawnAck).toContain(`🚀 Spawned: ${label}`)
+
+		const followPrompt = `Main2-${token}: Reply with exactly "main-${token}:6".`
+		await client.sendMessage(botUsername, { message: followPrompt })
+		const followReply = await waitForBotMessageContaining(client, botUsername, `main-${token}:6`, LONG_TIMEOUT)
+		expect(followReply).toContain(`main-${token}:6`)
+
+		const subagentDone = await waitForBotMessageContaining(client, botUsername, `✅ ${label}`, LONG_TIMEOUT)
+		expect(subagentDone).toContain(`✅ ${label}`)
+		expect(subagentDone).toContain(`sub-${token}:42`)
+	}, LONG_TIMEOUT)
+
 	it('sends a prompt and receives an AI response', async () => {
 		// Start fresh
 		await client.sendMessage(botUsername, { message: '/new' })
@@ -366,10 +395,12 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 })
 
 describe('telegram gateway e2e (skipped)', () => {
-	it.skipIf(shouldRun)('skipped: missing env vars or running in CI', () => {
+	it.skipIf(shouldRun)('skipped: set TG_E2E_RUN=1 with valid TG_E2E_* env vars', () => {
 		// This test exists to show why the suite was skipped
 		if (isCI) {
 			console.log('Skipped: Telegram E2E tests are local-only (CI detected)')
+		} else if (process.env.TG_E2E_RUN !== '1') {
+			console.log('Skipped: TG_E2E_RUN=1 not set')
 		} else {
 			console.log('Skipped: Missing TG_E2E_* environment variables')
 		}
