@@ -472,9 +472,10 @@ export type QueuedMessage = {
 	attachments?: Array<{ localPath?: string }>
 	createdAt: number
 	context?: {
-		source?: 'user' | 'cron' | 'memory-tool'
+		source?: 'user' | 'cron' | 'memory-tool' | 'session-tool'
 		cronJobId?: string
 		memoryToolDepth?: number
+		sessionToolDepth?: number
 		isPrivateChat?: boolean
 	}
 }

@@ -44,6 +44,13 @@ import {
 	runMemoryTool,
 	type MemoryToolCall,
 } from '../memory/tools.js'
+import {
+	buildSessionToolInstructions,
+	formatSessionToolResultPrompt,
+	parseSessionToolCall,
+	runSessionTool,
+	type SessionToolCall,
+} from './session-tools.js'
 import { createConceptsIndex, getRelatedFilesForTerms } from '../workspace/concepts-index.js'
 import { spawn } from 'node:child_process'
 import {
@@ -1000,9 +1007,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	}
 
 	type MessageContext = {
-		source?: 'user' | 'cron' | 'memory-tool'
+		source?: 'user' | 'cron' | 'memory-tool' | 'session-tool'
 		cronJobId?: string
 		memoryToolDepth?: number
+		sessionToolDepth?: number
 		isPrivateChat?: boolean
 	}
 
@@ -1058,6 +1066,11 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			}
 		}
 
+		// Session tools are always available (for cross-session inspection/communication)
+		if (context?.source !== 'session-tool') {
+			prompt = `${buildSessionToolInstructions()}\n\n${prompt}`
+		}
+
 		// Enforce tool-based recall for recall questions (forces a tool call loop)
 		if (recallRequired) {
 			prompt = `${buildRecallEnforcementHint()}\n\n${prompt}`
@@ -1073,7 +1086,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		}
 
 		// Log user message
-		const logRole = context?.source === 'memory-tool' ? 'system' : 'user'
+		const logRole = context?.source === 'memory-tool' || context?.source === 'session-tool' ? 'system' : 'user'
 		void persistentStore.logMessage(chatId, logRole, originalPrompt, undefined, cliName)
 		const manifest = manifests.get(cliName)
 		if (!manifest) {
@@ -1312,6 +1325,54 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 								} catch (err) {
 									const message = err instanceof Error ? err.message : 'unknown error'
 									console.error('[jsonl-bridge] Memory tool failed:', message)
+								}
+							}
+
+							// Session tools (always available)
+							const sessionToolDepth = context?.sessionToolDepth ?? 0
+							const shouldCheckSessionTool = !getSettings().streaming && sessionToolDepth < 2
+							let sessionToolCall: SessionToolCall | null = null
+							if (shouldCheckSessionTool) {
+								sessionToolCall = parseSessionToolCall(evt.answer)
+							}
+							if (sessionToolCall) {
+								try {
+									const toolResult = await runSessionTool(sessionToolCall, {
+										workspaceDir: config.workingDirectory,
+										currentChatId: chatId,
+										sendToChat: send,
+										spawnSubagent: async ({ chatId: targetChatId, task, label, cli }) => {
+											const activeCli = persistentStore.getActiveCli(targetChatId) || sessionStore.getActiveCli(targetChatId) || config.defaultCli
+											const settings = persistentStore.getChatSettings(targetChatId)
+											const record = await spawnSubagentInternal({
+												chatId: targetChatId,
+												task,
+												label,
+												cli: cli || activeCli,
+												explicitCli: Boolean(cli),
+												manifests,
+												defaultCli: config.defaultCli,
+												subagentFallbackCli: config.subagentFallbackCli,
+												workingDirectory: config.workingDirectory,
+												memory: config.memory,
+												model: settings.model,
+												send,
+												logMessage: persistentStore.logMessage,
+												parentSessionId: currentSessionId,
+											})
+											return record ? { runId: record.runId } : null
+										},
+									})
+									const toolPrompt = formatSessionToolResultPrompt(sessionToolCall, toolResult, originalPrompt)
+									await processMessage(chatId, toolPrompt, {
+										...context,
+										source: 'session-tool',
+										sessionToolDepth: sessionToolDepth + 1,
+									})
+									break
+								} catch (err) {
+									const message = err instanceof Error ? err.message : 'unknown error'
+									console.error('[jsonl-bridge] Session tool failed:', message)
 								}
 							}
 
