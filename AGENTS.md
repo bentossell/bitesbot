@@ -48,7 +48,7 @@
 - **Default port**: 8787 (NOT 7777)
 - **Health check**: `curl http://localhost:8787/health`
 - **Status endpoint**: `curl http://localhost:8787/status`
-- **Config**: `~/.tg-gateway/config.json` or `TG_GATEWAY_CONFIG` env var
+- **Config**: default `~/.config/tg-gateway/config.json` (override with `TG_GATEWAY_CONFIG` if using another path)
 - **Launchd service**: `com.bentossell.bitesbot` (auto-restarts on crash)
 - **Logs**: `~/logs/bitesbot.log` and `~/logs/bitesbot.err`
 
@@ -87,3 +87,14 @@ If gateway fails to start with `EADDRINUSE` on port 8787:
 - JSONL bridge for Claude CLI and Droid CLI
 - Cron job scheduling for automated messages
 - Session resume support per CLI
+
+## Documentation
+
+- Root: `README.md`
+- Index: `docs/README.md`
+- Feature docs: `docs/` (architecture, config, API, bridge, ops, workspace tools)
+- Links feature: `README-LINKS.md`
+
+## Agent navigation
+
+- Subdirectories include `AGENTS.md` files with local entrypoints and gotchas.
