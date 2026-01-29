@@ -360,9 +360,6 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 				LONG_TIMEOUT,
 			),
 		])
-		console.log(`[e2e] started id=${startedMsg.id} ts=${startedMsg.timestamp} text="${startedMsg.text}"`)
-		console.log(`[e2e] main reply id=${followReply.id} ts=${followReply.timestamp} text="${followReply.text}"`)
-		console.log(`[e2e] subagent done id=${subagentDone.id} ts=${subagentDone.timestamp} text="${subagentDone.text}"`)
 		expect(followReply.text).toContain(`main-${token}:6`)
 		expect(subagentDone.text).toContain(`✅ ${label}`)
 		expect(subagentDone.text).toContain(`sub-${token}:42`)
