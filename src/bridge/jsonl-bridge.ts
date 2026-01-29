@@ -30,6 +30,7 @@ import {
 	parseSubagentsCommand,
 	formatSubagentList,
 	formatSubagentAnnouncement,
+	parseAssistantSpawnCommand,
 	findSubagent,
 } from './subagent-commands.js'
 import { buildMemoryRecall } from '../memory/recall.js'
@@ -188,7 +189,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		// Schedule exit after sending response (give time for message to be sent)
 		setTimeout(() => {
 			console.log('[jsonl-bridge] Exiting for restart...')
-			process.exit(0)
+			process.kill(process.pid, 'SIGTERM')
 		}, 500)
 		return { handled: true, response: '🔄 Restarting gateway...' }
 	}
@@ -582,6 +583,16 @@ const extractSendfileCommands = (text: string): { files: Array<{ path: string; c
 	return { files, remainingText }
 }
 
+const SUBAGENT_SPAWN_INSTRUCTIONS = [
+	'Subagent delegation:',
+	'If the user explicitly asks to use a subagent, respond with exactly one line:',
+	'/spawn "task description"',
+	'Do not include any other text before or after /spawn.',
+].join('\n')
+
+const isSpawnDirectiveCandidate = (text: string): boolean =>
+	text.trimStart().startsWith('/spawn')
+
 const formatToolName = (name: string): string => {
 	const icons: Record<string, string> = {
 		Read: '📖',
@@ -892,6 +903,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			}
 		}
 
+		if (!context?.source) {
+			prompt = `${SUBAGENT_SPAWN_INSTRUCTIONS}\n\n${prompt}`
+		}
+
 		const relatedContext = await buildRelatedContext(originalPrompt)
 		if (relatedContext) {
 			prompt = `${prompt}\n\n${relatedContext}`
@@ -947,6 +962,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				streamTimer = null
 			}
 			if (!streamBuffer || (!force && streamBuffer.length < STREAM_MIN_CHARS)) return
+			if (isSpawnDirectiveCandidate(streamBuffer)) return
 
 			const delta = streamBuffer.startsWith(lastStreamedText)
 				? streamBuffer.slice(lastStreamedText.length)
@@ -1077,12 +1093,34 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 							cronService.markComplete(context.cronJobId, errorMessage)
 							cronMarked = true
 						}
-						if (getSettings().streaming) {
+						const assistantSpawn = evt.answer ? parseAssistantSpawnCommand(evt.answer) : null
+						if (!assistantSpawn && getSettings().streaming) {
 							await flushStreamBuffer(true)
 						}
 						console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
 						sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 						void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
+
+						if (assistantSpawn) {
+							const activeCli = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || cliName
+							const settings = getSettings()
+							void spawnSubagent({
+								chatId,
+								task: assistantSpawn.task,
+								label: assistantSpawn.label,
+								cli: assistantSpawn.cli || activeCli,
+								explicitCli: Boolean(assistantSpawn.cli),
+								manifests,
+								defaultCli: config.defaultCli,
+								subagentFallbackCli: config.subagentFallbackCli,
+								workingDirectory: config.workingDirectory,
+								model: settings.model,
+								send,
+								logMessage: persistentStore.logMessage,
+								parentSessionId: currentSessionId,
+							})
+							break
+						}
 
 						// Send any files that were queued during streaming
 						for (const file of pendingFiles) {

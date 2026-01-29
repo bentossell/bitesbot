@@ -104,6 +104,19 @@ export function parseSpawnCommand(text: string): SpawnCommandParseResult | null 
 }
 
 /**
+ * Parse /spawn output from an assistant response.
+ * Requires a single-line /spawn command with no extra text.
+ */
+export function parseAssistantSpawnCommand(text: string): SpawnCommandParseResult | null {
+	const trimmed = text.trim()
+	if (!trimmed) return null
+	const firstLine = trimmed.split('\n')[0]?.trim() ?? ''
+	if (!firstLine.startsWith('/spawn')) return null
+	if (trimmed !== firstLine) return null
+	return parseSpawnCommand(firstLine)
+}
+
+/**
  * Format subagent list for display
  */
 export function formatSubagentList(records: SubagentRunRecord[]): string {

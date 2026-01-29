@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
 	parseSpawnCommand,
+	parseAssistantSpawnCommand,
 	parseSubagentsCommand,
 	formatSubagentList,
 	formatSubagentAnnouncement,
@@ -51,6 +52,23 @@ describe('parseSpawnCommand', () => {
 	it('handles unterminated quotes', () => {
 		const result = parseSpawnCommand('/spawn "task without end quote')
 		expect(result).toEqual({ task: 'task without end quote' })
+	})
+})
+
+describe('parseAssistantSpawnCommand', () => {
+	it('parses a single-line /spawn response', () => {
+		const result = parseAssistantSpawnCommand('/spawn "do something"')
+		expect(result).toEqual({ task: 'do something' })
+	})
+
+	it('returns null when extra text is present', () => {
+		const result = parseAssistantSpawnCommand('/spawn "task"\n\nSure, doing that now.')
+		expect(result).toBeNull()
+	})
+
+	it('returns null when /spawn is not the only line', () => {
+		const result = parseAssistantSpawnCommand('Note:\n/spawn "task"')
+		expect(result).toBeNull()
 	})
 })
 
