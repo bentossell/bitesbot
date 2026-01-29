@@ -168,7 +168,14 @@ export const writeGatewayConfig = async (input: GatewayConfigInput): Promise<Gat
 
 	await mkdir(logsDir, { recursive: true })
 
-	const allowedChatIds = input.chatId ? [normalizeChatId(input.chatId)].filter((id): id is number => id !== undefined) : undefined
+	let allowedChatIds: number[] | undefined
+	if (input.chatId) {
+		const parsed = normalizeChatId(input.chatId)
+		if (parsed === undefined) {
+			throw new Error(`Invalid chatId: "${input.chatId}" is not a valid number`)
+		}
+		allowedChatIds = [parsed]
+	}
 	const adaptersDir = input.adaptersDir ?? join(process.cwd(), 'adapters')
 
 	const payload: GatewayConfig = {
