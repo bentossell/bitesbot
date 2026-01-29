@@ -484,6 +484,8 @@ export type SessionStore = {
 	delete: (chatId: number | string) => void
 	getResumeToken: (chatId: number | string, cli: string) => ResumeToken | undefined
 	setResumeToken: (chatId: number | string, cli: string, token: ResumeToken) => void
+	clearResumeToken: (chatId: number | string, cli: string) => void
+	clearResumeTokens: (chatId: number | string) => void
 	getActiveCli: (chatId: number | string) => string | undefined
 	setActiveCli: (chatId: number | string, cli: string) => void
 	isBusy: (chatId: number | string) => boolean
@@ -508,6 +510,15 @@ export const createSessionStore = (): SessionStore => {
 		delete: (chatId) => sessions.delete(chatId),
 		getResumeToken: (chatId, cli) => resumeTokens.get(`${chatId}:${cli}`),
 		setResumeToken: (chatId, cli, token) => resumeTokens.set(`${chatId}:${cli}`, token),
+		clearResumeToken: (chatId, cli) => resumeTokens.delete(`${chatId}:${cli}`),
+		clearResumeTokens: (chatId) => {
+			const prefix = `${chatId}:`
+			for (const key of resumeTokens.keys()) {
+				if (key.startsWith(prefix)) {
+					resumeTokens.delete(key)
+				}
+			}
+		},
 		getActiveCli: (chatId) => activeCli.get(chatId),
 		setActiveCli: (chatId, cli) => activeCli.set(chatId, cli),
 		// Only main sessions (not subagents) block the chat

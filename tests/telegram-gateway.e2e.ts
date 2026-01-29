@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { TelegramClient, sessions } from 'telegram'
 import WebSocket, { type RawData } from 'ws'
 import { setTimeout as delay } from 'node:timers/promises'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -19,6 +20,14 @@ const authToken = process.env.TG_E2E_AUTH_TOKEN
 const allowedChatIdEnv = process.env.TG_E2E_ALLOWED_CHAT_ID
 const gatewayPortRaw = process.env.TG_E2E_GATEWAY_PORT
 const hasDroid = existsSync(join(homedir(), '.local/bin/droid'))
+const hasCodex = (() => {
+	try {
+		const result = spawnSync('which', ['codex'])
+		return result.status === 0
+	} catch {
+		return false
+	}
+})()
 
 const botUsername = botUsernameRaw
 	? botUsernameRaw.startsWith('@') ? botUsernameRaw : `@${botUsernameRaw}`
@@ -305,6 +314,12 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
+	it.skipIf(!hasCodex)('/use codex switches CLI', async () => {
+		await client.sendMessage(botUsername, { message: '/use codex' })
+		const reply = await waitForBotMessageContaining(client, botUsername, 'codex', SHORT_TIMEOUT)
+		expect(reply).toBeDefined()
+	}, TIMEOUT_MS)
+
 	it('/cron list returns response', async () => {
 		await client.sendMessage(botUsername, { message: '/cron list' })
 		// Wait for any response (could be "No jobs" or a list)
@@ -322,7 +337,7 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		await client.sendMessage(botUsername, { message: '/use droid' })
 		await waitForBotMessage(client, botUsername, 'Switched to droid.', SHORT_TIMEOUT)
 
-		const spawnPrompt = `/spawn --label "${label}" "Write 60 bullet points about shipping a feature. Use 6 section headings with 10 bullets each. Each bullet must be at least 12 words. End with sub-${token}:42."`
+		const spawnPrompt = `/spawn --label "${label}" "First line must be sub-${token}:42. Write 60 bullet points about shipping a feature. Use 6 section headings with 10 bullets each. Each bullet must be at least 12 words. End with sub-${token}:42."`
 		await client.sendMessage(botUsername, { message: spawnPrompt })
 		const spawnAck = await waitForNewBotMessageWithMeta(
 			client,
@@ -367,8 +382,14 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(followReply.id).toBeLessThan(subagentDone.id)
 	}, LONG_TIMEOUT)
 
-	it('sends a prompt and receives an AI response', async () => {
+	it.skipIf(!hasCodex)('sends a prompt and receives an AI response (codex)', async () => {
 		// Start fresh
+		await client.sendMessage(botUsername, { message: '/new' })
+		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+		await client.sendMessage(botUsername, { message: '/use codex' })
+		await waitForBotMessageContaining(client, botUsername, 'codex', SHORT_TIMEOUT)
+		await client.sendMessage(botUsername, { message: '/model codex' })
+		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 		await client.sendMessage(botUsername, { message: '/new' })
 		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
 		

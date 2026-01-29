@@ -92,6 +92,8 @@ export type PersistentSessionStore = {
 	
 	getResumeToken: (chatId: number | string, cli: string) => ResumeToken | undefined
 	setResumeToken: (chatId: number | string, cli: string, token: ResumeToken) => Promise<void>
+	clearResumeToken: (chatId: number | string, cli: string) => Promise<void>
+	clearResumeTokens: (chatId: number | string) => Promise<void>
 	getActiveCli: (chatId: number | string) => string | undefined
 	setActiveCli: (chatId: number | string, cli: string) => Promise<void>
 	getChatSettings: (chatId: number | string) => ChatSettings
@@ -134,6 +136,27 @@ export const createPersistentSessionStore = async (): Promise<PersistentSessionS
 		setResumeToken: async (chatId, cli, token) => {
 			resumeTokens.set(`${chatId}:${cli}`, token)
 			await persist()
+		},
+
+		clearResumeToken: async (chatId, cli) => {
+			const key = `${chatId}:${cli}`
+			if (resumeTokens.delete(key)) {
+				await persist()
+			}
+		},
+
+		clearResumeTokens: async (chatId) => {
+			const prefix = `${chatId}:`
+			let changed = false
+			for (const key of Array.from(resumeTokens.keys())) {
+				if (key.startsWith(prefix)) {
+					resumeTokens.delete(key)
+					changed = true
+				}
+			}
+			if (changed) {
+				await persist()
+			}
 		},
 		
 		getActiveCli: (chatId) => activeCli.get(String(chatId)),
