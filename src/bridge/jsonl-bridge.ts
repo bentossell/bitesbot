@@ -87,6 +87,18 @@ type ParseCommandOptions = {
 	persistentStore?: PersistentSessionStore
 }
 
+const parseSlashCommand = (text: string): { command: string; rest: string } | null => {
+	const trimmed = text.trim()
+	if (!trimmed.startsWith('/')) return null
+	const match = trimmed.match(/^\/(\S+)(?:\s+([\s\S]*))?$/)
+	if (!match) return null
+	const token = match[1] ?? ''
+	if (!token) return null
+	const command = token.split('@')[0]?.toLowerCase()
+	if (!command) return null
+	return { command, rest: match[2]?.trim() ?? '' }
+}
+
 const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> => {
 	const { text, chatId, manifests, defaultCli, sessionStore, workingDirectory, cronService, persistentStore } = opts
 	const trimmed = text.trim()
@@ -184,7 +196,8 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 	}
 
 	// /restart - gracefully restart the gateway (launchd will respawn)
-	if (trimmed === '/restart') {
+	const slashCommand = parseSlashCommand(trimmed)
+	if (slashCommand?.command === 'restart') {
 		console.log('[jsonl-bridge] Restart requested via /restart command')
 		// Schedule exit after sending response (give time for message to be sent)
 		setTimeout(() => {
