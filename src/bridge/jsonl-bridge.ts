@@ -1,6 +1,5 @@
 import WebSocket from 'ws'
-import type { GatewayEvent, IncomingMessage, CallbackQuery } from '../protocol/types.js'
-import type { Plan } from '../protocol/plan-types.js'
+import type { GatewayEvent, IncomingMessage } from '../protocol/types.js'
 import { type CLIManifest, loadAllManifests } from './manifest.js'
 import {
 	JsonlSession,
@@ -33,20 +32,6 @@ import {
 	formatSubagentAnnouncement,
 	findSubagent,
 } from './subagent-commands.js'
-import {
-	storePendingPlan,
-	getPendingPlan,
-	removePendingPlan,
-	formatPlanForDisplay,
-} from './plan-approval-store.js'
-import {
-	setSpecMode,
-	getSpecMode,
-	clearSpecMode,
-	isInSpecMode,
-	setPendingPlan,
-	detectIntent,
-} from './spec-mode-store.js'
 import { buildMemoryRecall } from '../memory/recall.js'
 import type { MemoryConfig } from '../memory/types.js'
 import {
@@ -387,16 +372,6 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 	return { handled: true, response: 'Usage: /aliases list | /aliases add <alias> <canonical> | /aliases remove <alias>' }
 	}
 
-	// /spec command - create plan for approval
-	if (trimmed.startsWith('/spec ')) {
-		const task = trimmed.slice(6).trim()
-		if (!task) {
-			return { handled: true, response: 'Usage: /spec <task description>' }
-		}
-		// Signal that this is a spec command - actual planning handled in bridge
-		return { handled: true, response: '__SPEC__', async: true }
-	}
-
 	// Subagent commands - /spawn handled async in bridge, return signal here
 	if (trimmed.startsWith('/spawn')) {
 		const parsed = parseSpawnCommand(trimmed)
@@ -623,346 +598,6 @@ const formatToolName = (name: string): string => {
 		FetchUrl: '🌐',
 	}
 	return `${icons[name] || '🔧'} ${name}`
-}
-
-type NativeSpecModeOptions = {
-	chatId: number | string
-	task: string
-	cli: string
-	manifests: Map<string, CLIManifest>
-	workingDirectory: string
-	gatewayUrl: string
-	authToken?: string
-	model?: string
-	send: (chatId: number | string, text: string) => Promise<void>
-	typing: (chatId: number | string) => Promise<void>
-	sessionStore: SessionStore
-}
-
-/**
- * Run agent in native spec mode using the adapter's specMode.flag
- * The agent will create a plan and emit a spec_plan event when ExitSpecMode is called
- */
-const runNativeSpecMode = async (opts: NativeSpecModeOptions): Promise<void> => {
-	const { chatId, task, cli, manifests, workingDirectory, gatewayUrl, authToken, model, send, typing, sessionStore } = opts
-
-	const manifest = manifests.get(cli)
-	if (!manifest) {
-		await send(chatId, `❌ CLI not found: ${cli}`)
-		return
-	}
-
-	// Check if this CLI supports spec mode
-	if (!manifest.specMode?.flag) {
-		await send(chatId, `⚠️ CLI '${cli}' does not support native spec mode. Using fallback plan generation.`)
-		// Could fall back to old createPlanForApproval here, but for now just return
-		return
-	}
-
-	await send(chatId, '📋 Planning with native spec mode...')
-	console.log(`[jsonl-bridge] Starting native spec mode for task: "${task.slice(0, 50)}..."`)
-
-	// Set up spec mode state
-	setSpecMode({
-		chatId,
-		active: true,
-		originalTask: task,
-		cli,
-		createdAt: new Date().toISOString(),
-	})
-
-	// Start typing indicator
-	let typingInterval: ReturnType<typeof setInterval> | null = null
-	void typing(chatId)
-	typingInterval = setInterval(() => void typing(chatId), 4000)
-
-	const stopTypingLoop = () => {
-		if (typingInterval) {
-			clearInterval(typingInterval)
-			typingInterval = null
-		}
-	}
-
-	// Create session
-	const session = new JsonlSession(chatId, manifest, workingDirectory)
-	sessionStore.set(session)
-
-	session.on('event', async (evt: BridgeEvent) => {
-		switch (evt.type) {
-			case 'started':
-				console.log(`[jsonl-bridge] Spec mode session started: ${evt.sessionId}`)
-				break
-
-			case 'spec_plan': {
-				// Agent exited spec mode with a plan
-				console.log(`[jsonl-bridge] Received spec plan from agent`)
-				stopTypingLoop()
-				
-				// Store the plan
-				setPendingPlan(chatId, evt.plan)
-				
-				// Send plan with approval buttons
-				const httpUrl = gatewayUrl.replace(/^ws/, 'http').replace('/events', '')
-				const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-				if (authToken) {
-					headers.Authorization = `Bearer ${authToken}`
-				}
-
-				const planMessage = `📋 **Implementation Plan**\n\n${evt.plan}\n\n---\nReply with "proceed", "yes", or similar to execute. Reply with "cancel" to abort. Or send feedback to refine the plan.`
-
-				try {
-					await fetch(`${httpUrl}/send`, {
-						method: 'POST',
-						headers,
-						body: JSON.stringify({
-							chatId,
-							text: planMessage,
-							inlineButtons: [
-								[
-									{ text: '✅ Approve', callbackData: 'spec:approve' },
-									{ text: '❌ Cancel', callbackData: 'spec:cancel' },
-								],
-							],
-						}),
-					})
-				} catch (err) {
-					console.error('[jsonl-bridge] Failed to send spec plan with buttons:', err)
-					await send(chatId, planMessage)
-				}
-				break
-			}
-
-			case 'text':
-				// In spec mode, text output might be intermediate thinking
-				// We could optionally show this to the user
-				break
-
-			case 'completed': {
-				stopTypingLoop()
-				console.log(`[jsonl-bridge] Spec mode session completed: ${evt.sessionId}`)
-				
-				// If we didn't get a spec_plan event, the agent might have output the plan as text
-				const specState = getSpecMode(chatId)
-				if (specState && !specState.pendingPlan) {
-					if (evt.answer) {
-						// Treat the final answer as the plan
-						setPendingPlan(chatId, evt.answer)
-						
-						const planMessage = `📋 **Implementation Plan**\n\n${evt.answer}\n\n---\nReply with "proceed", "yes", or similar to execute. Reply with "cancel" to abort. Or send feedback to refine the plan.`
-						await send(chatId, planMessage)
-					} else {
-						clearSpecMode(chatId)
-						await send(chatId, '⚠️ Spec mode ended without a plan. Try /spec again.')
-					}
-				}
-				break
-			}
-
-			case 'error':
-				stopTypingLoop()
-				clearSpecMode(chatId)
-				await send(chatId, `❌ Spec mode error: ${evt.message}`)
-				break
-		}
-	})
-
-	session.on('exit', (code) => {
-		stopTypingLoop()
-		console.log(`[jsonl-bridge] Spec mode session exited with code ${code}`)
-		sessionStore.delete(chatId)
-		const specState = getSpecMode(chatId)
-		if (specState && !specState.pendingPlan) {
-			clearSpecMode(chatId)
-		}
-	})
-
-	// Run with spec mode enabled (no resume for fresh planning)
-	session.run(task, undefined, { specMode: true, model })
-}
-
-type CreatePlanOptions = {
-	chatId: number | string
-	task: string
-	cli: string
-	manifests: Map<string, CLIManifest>
-	workingDirectory: string
-	gatewayUrl: string
-	authToken?: string
-	send: (chatId: number | string, text: string) => Promise<void>
-	messageId?: number
-	userId?: number | string
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const createPlanForApproval = async (opts: CreatePlanOptions): Promise<void> => {
-	const { chatId, task, cli, manifests, workingDirectory, gatewayUrl, authToken, send, messageId, userId } = opts
-
-	const manifest = manifests.get(cli)
-	if (!manifest) {
-		await send(chatId, `❌ CLI not found: ${cli}`)
-		return
-	}
-
-	await send(chatId, '📋 Creating plan...')
-	console.log(`[jsonl-bridge] Creating plan for task: "${task.slice(0, 50)}..."`)
-
-	// Create a session to generate the plan
-	const session = new JsonlSession(`plan-${chatId}-${Date.now()}`, manifest, workingDirectory)
-
-	let planText = ''
-	const planPrompt = `Create a detailed implementation plan for the following task. Format your response as a structured plan with:
-
-TITLE: <brief title>
-
-STEPS:
-1. <step description> [Files: file1.ts, file2.ts]
-2. <step description> [Files: file3.ts]
-...
-
-RISKS:
-- <potential risk or consideration>
-
-Task: ${task}
-
-Provide ONLY the plan in the format above, no additional commentary.`
-
-	session.on('event', (evt: BridgeEvent) => {
-		switch (evt.type) {
-			case 'text':
-				if (evt.text) {
-					planText = evt.text
-				}
-				break
-
-			case 'completed': {
-				console.log(`[jsonl-bridge] Plan generation completed`)
-
-				// Parse the plan from the response
-				const plan = parsePlanFromText(planText || evt.answer || '')
-
-				if (!plan || plan.steps.length === 0) {
-					void send(chatId, '❌ Failed to generate plan. Please try again.')
-					return
-				}
-
-				// Store the pending plan (createdAt as ISO string for serialization)
-				storePendingPlan({
-					chatId,
-					plan,
-					originalPrompt: task,
-					cli,
-					messageId,
-					userId,
-					createdAt: new Date().toISOString(),
-				})
-
-				// Send plan with inline buttons
-				void sendPlanWithButtons(chatId, plan, gatewayUrl, authToken, send)
-				break
-			}
-
-			case 'error':
-				console.log(`[jsonl-bridge] Plan generation error: ${evt.message}`)
-				void send(chatId, `❌ Plan generation failed: ${evt.message}`)
-				break
-		}
-	})
-
-	session.on('exit', (code) => {
-		console.log(`[jsonl-bridge] Plan session exited with code ${code}`)
-	})
-
-	session.run(planPrompt)
-}
-
-const parsePlanFromText = (text: string): Plan | null => {
-	try {
-		const lines = text.split('\n')
-		let title = 'Implementation Plan'
-		const steps: Array<{ id: number; description: string; files?: string[] }> = []
-		const risks: string[] = []
-
-		let section: 'none' | 'steps' | 'risks' = 'none'
-
-		for (const line of lines) {
-			const trimmed = line.trim()
-
-			if (trimmed.startsWith('TITLE:')) {
-				title = trimmed.slice(6).trim()
-			} else if (trimmed === 'STEPS:') {
-				section = 'steps'
-			} else if (trimmed === 'RISKS:') {
-				section = 'risks'
-			} else if (section === 'steps' && /^\d+\./.test(trimmed)) {
-				const match = trimmed.match(/^(\d+)\.\s*(.+)$/)
-				if (match) {
-					const id = Number.parseInt(match[1], 10)
-					let description = match[2]
-					let files: string[] | undefined
-
-					// Extract files if present
-					const filesMatch = description.match(/\[Files?:\s*([^\]]+)\]/)
-					if (filesMatch) {
-						files = filesMatch[1].split(',').map((f) => f.trim())
-						description = description.replace(/\[Files?:\s*[^\]]+\]/, '').trim()
-					}
-
-					steps.push({ id, description, files })
-				}
-			} else if (section === 'risks' && trimmed.startsWith('-')) {
-				risks.push(trimmed.slice(1).trim())
-			}
-		}
-
-		if (steps.length === 0) {
-			return null
-		}
-
-		return {
-			title,
-			steps,
-			risks: risks.length > 0 ? risks : undefined,
-		}
-	} catch {
-		return null
-	}
-}
-
-const sendPlanWithButtons = async (
-	chatId: number | string,
-	plan: Plan,
-	gatewayUrl: string,
-	authToken: string | undefined,
-	send: (chatId: number | string, text: string) => Promise<void>
-) => {
-	const planText = formatPlanForDisplay(plan)
-
-	// Send via HTTP endpoint with inline buttons using configured gateway URL
-	const httpUrl = gatewayUrl.replace(/^ws/, 'http').replace('/events', '')
-	const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-	if (authToken) {
-		headers.Authorization = `Bearer ${authToken}`
-	}
-
-	try {
-		await fetch(`${httpUrl}/send`, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify({
-				chatId,
-				text: planText,
-				inlineButtons: [
-					[
-						{ text: '✅ Approve', callbackData: 'plan:approve' },
-						{ text: '❌ Cancel', callbackData: 'plan:cancel' },
-					],
-				],
-			}),
-		})
-	} catch (err) {
-		console.error('[jsonl-bridge] Failed to send plan with buttons:', err)
-		await send(chatId, planText + '\n\n(Failed to add buttons)')
-	}
 }
 
 type SpawnSubagentOptions = {
@@ -1628,37 +1263,6 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 		console.log(`[jsonl-bridge] Received from ${chatId}: "${prompt.slice(0, 50)}..."`)
 
-		// Check if we're in spec mode and handle natural language intents
-		if (isInSpecMode(chatId)) {
-			const specState = getSpecMode(chatId)
-			if (specState?.pendingPlan) {
-				const intent = detectIntent(prompt)
-				console.log(`[jsonl-bridge] Spec mode intent detected: ${intent}`)
-				
-				if (intent === 'approve') {
-					// User approved the plan via natural language
-					const plan = specState.pendingPlan
-					const originalTask = specState.originalTask
-					clearSpecMode(chatId)
-					await send(chatId, '✅ Plan approved! Executing...')
-					
-					const executionPrompt = `Execute this approved plan:\n\n${plan}\n\nOriginal task: ${originalTask}\n\nProceed with implementation step by step.`
-					await processMessage(chatId, executionPrompt)
-					return
-				} else if (intent === 'cancel') {
-					// User cancelled the plan via natural language
-					clearSpecMode(chatId)
-					await send(chatId, '❌ Spec cancelled.')
-					return
-				}
-				// intent === 'refine': pass the message through to refine the plan
-				// For now, just clear spec mode and process normally
-				// In the future, could resume with the feedback
-				console.log(`[jsonl-bridge] Treating message as refinement feedback, clearing spec mode`)
-				clearSpecMode(chatId)
-			}
-		}
-
 		// Handle commands (always process immediately)
 		const cmdResult = await parseCommand({
 			text: prompt,
@@ -1671,27 +1275,6 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			persistentStore,
 		})
 		if (cmdResult.handled) {
-			// Handle /spec command - use native spec mode
-			if ('async' in cmdResult && cmdResult.response === '__SPEC__') {
-				const task = prompt.slice(6).trim()
-				const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
-				const settings = persistentStore.getChatSettings(chatId)
-				void runNativeSpecMode({
-					chatId,
-					task,
-					cli: cliName,
-					manifests,
-					workingDirectory: config.workingDirectory,
-					gatewayUrl: config.gatewayUrl,
-					authToken: config.authToken,
-					model: settings.model,
-					send,
-					typing,
-					sessionStore,
-				})
-				return
-			}
-
 			if ('async' in cmdResult && cmdResult.response === '__SPAWN__') {
 				const spawnCmd = parseSpawnCommand(prompt)
 				if (spawnCmd) {
@@ -1775,84 +1358,16 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		await processMessage(chatId, prompt, context)
 	}
 
-	const handleCallbackQuery = async (query: CallbackQuery) => {
-		const { chatId, data, messageId, userId } = query
-
-		if (data === 'plan:approve') {
-			// Pass messageId and userId for proper identification
-			const pendingPlan = getPendingPlan(chatId, messageId, userId)
-			if (!pendingPlan) {
-				await send(chatId, '❌ No pending plan found.')
-				return
+		ws.on('message', (data) => {
+			try {
+				const event = JSON.parse(data.toString()) as GatewayEvent
+				if (event.type === 'message.received') {
+					void handleMessage(event.payload)
+				}
+			} catch {
+				// ignore
 			}
-
-			removePendingPlan(chatId, messageId, userId)
-			await send(chatId, '✅ Plan approved! Executing...')
-
-			// Execute the plan by running the original prompt with plan context
-			const planContext = `You are executing an approved plan. Here is the plan:\n\n${formatPlanForDisplay(pendingPlan.plan)}\n\nOriginal task: ${pendingPlan.originalPrompt}\n\nPlease execute this plan step by step.`
-
-			void handleMessage({
-				id: `plan-exec-${Date.now()}`,
-				chatId,
-				text: planContext,
-				userId: query.userId,
-				messageId: query.messageId,
-				timestamp: new Date().toISOString(),
-				raw: { planExecution: true },
-			})
-		} else if (data === 'plan:cancel') {
-			const pendingPlan = getPendingPlan(chatId, messageId, userId)
-			if (pendingPlan) {
-				removePendingPlan(chatId, messageId, userId)
-				await send(chatId, '❌ Plan cancelled.')
-			}
-		} else if (data === 'spec:approve') {
-			// Handle native spec mode approval
-			const specState = getSpecMode(chatId)
-			if (!specState || !specState.pendingPlan) {
-				await send(chatId, '❌ No pending spec plan found.')
-				return
-			}
-
-			const plan = specState.pendingPlan
-			const originalTask = specState.originalTask
-			clearSpecMode(chatId)
-			await send(chatId, '✅ Plan approved! Executing...')
-
-			// Execute the approved plan
-			const executionPrompt = `Execute this approved plan:\n\n${plan}\n\nOriginal task: ${originalTask}\n\nProceed with implementation step by step.`
-
-			void handleMessage({
-				id: `spec-exec-${Date.now()}`,
-				chatId,
-				text: executionPrompt,
-				userId: query.userId,
-				messageId: query.messageId,
-				timestamp: new Date().toISOString(),
-				raw: { specExecution: true },
-			})
-		} else if (data === 'spec:cancel') {
-			// Handle native spec mode cancellation
-			if (isInSpecMode(chatId)) {
-				clearSpecMode(chatId)
-				await send(chatId, '❌ Spec cancelled.')
-			}
-		}
-	}
-
-	ws.on('message', (data) => {
-		try {
-			const event = JSON.parse(data.toString()) as GatewayEvent
-			if (event.type === 'message.received') {
-				void handleMessage(event.payload)
-			} else if (event.type === 'callback.query') {
-				void handleCallbackQuery(event.payload)
-			}
-		} catch {
-			// ignore
-		}
-	})
+		})
 
 	ws.on('error', (err) => {
 		console.error('[jsonl-bridge] WebSocket error:', err.message)

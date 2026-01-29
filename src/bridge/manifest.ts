@@ -53,7 +53,7 @@ export type ModelConfig = {
 }
 
 export type SpecModeConfig = {
-	flag: string // e.g., '--use-spec' for droid, '--permission-mode plan' for claude
+	flag: string
 }
 
 export type CLIManifest = {

@@ -41,45 +41,30 @@ export const getPendingPlan = (chatId: number | string, messageId?: number, user
 }
 
 export const removePendingPlan = (chatId: number | string, messageId?: number, userId?: number | string): void => {
-	// Remove by exact key first
-	if (userId !== undefined) {
-		const exactKey = makeKey(chatId, messageId, userId)
-		if (pendingApprovals.has(exactKey)) {
-			pendingApprovals.delete(exactKey)
-			return
-		}
-		// Remove chat+user key if present
-		const userKey = makeKey(chatId, undefined, userId)
-		if (pendingApprovals.has(userKey)) {
-			pendingApprovals.delete(userKey)
-			return
-		}
+	// Remove exact key first
+	const key = makeKey(chatId, messageId, userId)
+	pendingApprovals.delete(key)
+	// Also remove fallback key if messageId/userId not provided
+	if (messageId === undefined && userId === undefined) {
+		pendingApprovals.delete(String(chatId))
 	}
-	// Fall back to chat-only key
-	const fallbackKey = String(chatId)
-	pendingApprovals.delete(fallbackKey)
 }
 
 export const formatPlanForDisplay = (plan: Plan): string => {
-	const lines = [`📋 **${plan.title}**\n`]
-
+	const lines: string[] = []
+	lines.push(`📝 ${plan.title}`)
+	lines.push('')
+	lines.push('Steps:')
 	for (const step of plan.steps) {
-		lines.push(`${step.id}. ${step.description}`)
-		if (step.files && step.files.length > 0) {
-			lines.push(`   Files: ${step.files.join(', ')}`)
-		}
+		const files = step.files && step.files.length > 0 ? ` [Files: ${step.files.join(', ')}]` : ''
+		lines.push(`${step.id}. ${step.description}${files}`)
 	}
-
 	if (plan.risks && plan.risks.length > 0) {
-		lines.push('\n⚠️ **Risks:**')
+		lines.push('')
+		lines.push('Risks:')
 		for (const risk of plan.risks) {
-			lines.push(`• ${risk}`)
+			lines.push(`- ${risk}`)
 		}
 	}
-
-	if (plan.estimatedCost) {
-		lines.push(`\n💰 Estimated cost: $${plan.estimatedCost.toFixed(2)}`)
-	}
-
 	return lines.join('\n')
 }
