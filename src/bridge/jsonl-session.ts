@@ -23,6 +23,8 @@ export type DroidEvent =
 	| { type: 'session_start'; session_id: string; model?: string }
 	| { type: 'message'; role: 'user' | 'assistant'; text: string; session_id?: string }
 	| { type: 'thinking'; text: string; session_id?: string }
+	| { type: 'tool_call'; id: string; messageId?: string; toolId?: string; toolName: string; parameters?: Record<string, unknown>; timestamp?: number; session_id?: string }
+	| { type: 'tool_result'; id: string; messageId?: string; toolId?: string; isError?: boolean; value?: string | Record<string, unknown>; error?: { type?: string; message?: string }; timestamp?: number; session_id?: string }
 	| { type: 'tool_start'; tool: string; id: string; input: Record<string, unknown>; session_id?: string }
 	| { type: 'tool_end'; id: string; output?: string; error?: string; session_id?: string }
 	| { type: 'completion'; finalText: string; session_id?: string; numTurns?: number }
@@ -303,6 +305,27 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				}
 				break
 
+			// Droid: tool_call (newer format)
+			case 'tool_call': {
+				const toolId = event.id || event.toolId || 'unknown'
+				const input = event.parameters ?? {}
+				this.pendingTools.set(toolId, { name: event.toolName, input })
+				this.emit('event', {
+					type: 'tool_start',
+					toolId,
+					name: event.toolName,
+					input,
+				})
+				// Detect ExitSpecMode tool (used by Droid in spec mode)
+				if (event.toolName === 'ExitSpecMode') {
+					const plan = (input as { plan?: string }).plan
+					if (plan) {
+						this.emit('event', { type: 'spec_plan', plan })
+					}
+				}
+				break
+			}
+
 			// Droid: tool_end
 			case 'tool_end':
 				if ('id' in event) {
@@ -311,10 +334,29 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 						type: 'tool_end',
 						toolId: event.id,
 						isError: !!event.error,
-						preview: event.output?.slice(0, 200),
+						preview: event.output,
 					})
 				}
 				break
+
+			// Droid: tool_result (newer format)
+			case 'tool_result': {
+				const toolId = event.id || event.toolId || 'unknown'
+				this.pendingTools.delete(toolId)
+				const output =
+					typeof event.value === 'string'
+						? event.value
+						: event.value
+							? JSON.stringify(event.value)
+							: undefined
+				this.emit('event', {
+					type: 'tool_end',
+					toolId,
+					isError: !!event.isError,
+					preview: output ?? event.error?.message,
+				})
+				break
+			}
 
 			// Claude: user message (tool results)
 			case 'user':
@@ -323,7 +365,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 						if (block.type === 'tool_result') {
 							this.pendingTools.delete(block.tool_use_id)
 							const preview = typeof block.content === 'string'
-								? block.content.slice(0, 200)
+								? block.content
 								: undefined
 							this.emit('event', {
 								type: 'tool_end',

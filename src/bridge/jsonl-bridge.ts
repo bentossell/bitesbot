@@ -1186,6 +1186,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		// Get chat settings dynamically (allows mid-session changes via /stream and /verbose)
 		const getSettings = () => persistentStore.getChatSettings(chatId)
 		let lastToolStatus: string | null = null
+		let currentSessionId: string | undefined
+		const taskRunByToolId = new Map<string, string>()
 		let streamBuffer = ''
 		let streamTimer: ReturnType<typeof setTimeout> | null = null
 		const streamedTexts = new Set<string>()
@@ -1229,6 +1231,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			switch (evt.type) {
 				case 'started':
 					console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Session started: ${evt.sessionId}`)
+					currentSessionId = evt.sessionId
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 					break
 
@@ -1249,6 +1252,28 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					break
 
 				case 'tool_start': {
+					// Map Droid Task tool calls to subagent records
+					if (evt.name === 'Task') {
+						const input = evt.input ?? {}
+						const description = typeof input.description === 'string' ? input.description : undefined
+						const prompt = typeof input.prompt === 'string'
+							? input.prompt
+							: typeof description === 'string'
+								? description
+								: 'Task'
+						if (!taskRunByToolId.has(evt.toolId)) {
+							const record = subagentRegistry.spawn({
+								chatId,
+								task: prompt,
+								cli: cliName,
+								label: description,
+								parentSessionId: currentSessionId,
+							})
+							subagentRegistry.markRunning(record.runId, evt.toolId)
+							taskRunByToolId.set(evt.toolId, record.runId)
+							void saveSubagentRegistry()
+						}
+					}
 					if (getSettings().verbose) {
 						const status = formatToolName(evt.name)
 						if (status !== lastToolStatus) {
@@ -1260,6 +1285,18 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				}
 
 				case 'tool_end':
+					if (taskRunByToolId.has(evt.toolId)) {
+						const runId = taskRunByToolId.get(evt.toolId) as string
+						taskRunByToolId.delete(evt.toolId)
+						if (evt.isError) {
+							subagentRegistry.markError(runId, evt.preview || 'Task failed')
+						} else {
+							subagentRegistry.markCompleted(runId, evt.preview || '(no output)')
+						}
+						void send(chatId, formatSubagentAnnouncement(subagentRegistry.get(runId)!))
+						subagentRegistry.prune(chatId)
+						void saveSubagentRegistry()
+					}
 					if (getSettings().verbose) {
 						if (evt.isError) {
 							await send(chatId, `❌ Tool failed`)
