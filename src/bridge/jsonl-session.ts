@@ -29,13 +29,20 @@ export type DroidEvent =
 	| { type: 'tool_end'; id: string; output?: string; error?: string; session_id?: string }
 	| { type: 'completion'; finalText: string; session_id?: string; numTurns?: number }
 
+// Codex CLI events
+export type CodexEvent =
+	| { type: 'thread.started'; thread_id: string }
+	| { type: 'turn.started' }
+	| { type: 'item.completed'; item: { id: string; type: string; text?: string } }
+	| { type: 'turn.completed'; usage?: { input_tokens?: number; output_tokens?: number } }
+
 export type ContentBlock =
 	| { type: 'text'; text: string }
 	| { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
 	| { type: 'tool_result'; tool_use_id: string; content?: string | unknown[]; is_error?: boolean }
 	| { type: 'thinking'; thinking: string }
 
-type JsonlEvent = ClaudeEvent | DroidEvent
+type JsonlEvent = ClaudeEvent | DroidEvent | CodexEvent
 
 export type BridgeEvent =
 	| { type: 'started'; sessionId: string; model?: string }
@@ -404,6 +411,37 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 					})
 				}
 				break
+
+			// Codex: thread.started
+			case 'thread.started':
+				if ('thread_id' in event) {
+					this._resumeToken = { engine: this.cli, sessionId: event.thread_id }
+					this.emit('event', {
+						type: 'started',
+						sessionId: event.thread_id,
+					})
+				}
+				break
+
+			// Codex: item.completed (contains text response)
+			case 'item.completed':
+				if ('item' in event && event.item?.type === 'agent_message' && event.item.text) {
+					this._lastText = event.item.text
+					this.emit('event', { type: 'text', text: event.item.text })
+				}
+				break
+
+			// Codex: turn.completed (signals end of turn)
+			case 'turn.completed': {
+				const sessionId = this._resumeToken?.sessionId || 'unknown'
+				this.emit('event', {
+					type: 'completed',
+					sessionId,
+					answer: this._lastText,
+					isError: false,
+				})
+				break
+			}
 		}
 	}
 
