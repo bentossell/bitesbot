@@ -116,6 +116,12 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			return
 		}
 
+		const appendResumeArgs = (args: string[]) => {
+			if (!resume?.sessionId) return
+			const flag = this.manifest.resume?.flag ?? (this.cli === 'droid' ? '-s' : '--resume')
+			args.push(flag, resume.sessionId)
+		}
+
 		let args: string[]
 
 		if (this.cli === 'droid') {
@@ -128,9 +134,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				...(hasSkipPerms ? [] : ['--auto', 'high']),
 				...this.manifest.args,
 			]
-			if (resume?.sessionId) {
-				args.push('-s', resume.sessionId)
-			}
+			appendResumeArgs(args)
 			// Add spec mode flag if enabled and configured
 			if (options?.specMode && this.manifest.specMode?.flag) {
 				const flagParts = this.manifest.specMode.flag.split(' ')
@@ -145,9 +149,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				'--verbose',
 				...this.manifest.args,
 			]
-			if (resume?.sessionId) {
-				args.push('--resume', resume.sessionId)
-			}
+			appendResumeArgs(args)
 			// Add spec mode flag if enabled and configured
 			if (options?.specMode && this.manifest.specMode?.flag) {
 				const flagParts = this.manifest.specMode.flag.split(' ')

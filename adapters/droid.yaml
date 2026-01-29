@@ -5,7 +5,7 @@ args:
 inputMode: jsonl
 
 resume:
-  flag: --continue
+  flag: --session-id
   sessionArg: last
 
 model:
