@@ -33,7 +33,6 @@
 		"prepare": "husky"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.25.3",
 		"commander": "^12.1.0",
 		"grammy": "^1.25.1",
 		"node-pty": "^1.1.0",

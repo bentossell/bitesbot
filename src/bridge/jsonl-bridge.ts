@@ -71,14 +71,6 @@ export type BridgeHandle = {
 	close: () => void
 	getManifests: () => Map<string, CLIManifest>
 	getSessionStore: () => SessionStore
-	spawnSubagentForMcp: (opts: {
-		chatId: number | string
-		task: string
-		label?: string
-		cli?: string
-	}) => Promise<{ runId: string; status: string }>
-	getPrimaryChatId: () => number | string | null
-	getDefaultCli: () => string
 }
 
 type CommandResult =
@@ -1701,103 +1693,6 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		})
 	})
 
-	// MCP spawn function that returns a runId
-	const spawnSubagentForMcp = async (opts: {
-		chatId: number | string
-		task: string
-		label?: string
-		cli?: string
-	}): Promise<{ runId: string; status: string }> => {
-		const requestedCli = opts.cli || config.defaultCli
-		let cliName = requestedCli
-		let usedFallback = false
-
-		if (!opts.cli && requestedCli === 'droid' && config.subagentFallbackCli) {
-			if (manifests.has(config.subagentFallbackCli)) {
-				cliName = config.subagentFallbackCli
-				usedFallback = true
-			}
-		}
-
-		// Check concurrency limit
-		if (!subagentRegistry.canSpawn(opts.chatId)) {
-			throw new Error('Too many subagents running')
-		}
-
-		const manifest = manifests.get(cliName)
-		if (!manifest) {
-			throw new Error(`CLI not found: ${cliName}`)
-		}
-
-		// Register the run
-		const record = subagentRegistry.spawn({
-			chatId: opts.chatId,
-			task: opts.task,
-			cli: cliName,
-			label: opts.label,
-		})
-
-		const displayName = opts.label || `Subagent #${record.runId.slice(0, 8)}`
-		// Send spawn confirmation immediately
-		const fallbackNote = usedFallback ? ` (fallback from ${requestedCli})` : ''
-		await send(opts.chatId, `🚀 Spawned: ${displayName}\n   CLI: ${cliName}${fallbackNote}\n   Task: ${opts.task.slice(0, 100)}${opts.task.length > 100 ? '...' : ''}`)
-
-		console.log(`[jsonl-bridge] MCP spawning subagent ${record.runId} with ${cliName}: "${opts.task.slice(0, 50)}..."`)
-
-		// Run subagent in background on the Subagent lane (fire-and-forget)
-		void enqueueCommandInLane(CommandLane.Subagent, async () => {
-			const session = new JsonlSession(`subagent-${record.runId}`, manifest, config.workingDirectory, { isSubagent: true })
-
-			let lastText = ''
-
-			return new Promise<void>((resolve) => {
-				session.on('event', (evt: BridgeEvent) => {
-					switch (evt.type) {
-						case 'started':
-							subagentRegistry.markRunning(record.runId, evt.sessionId)
-							console.log(`[jsonl-bridge] Subagent ${record.runId} started: ${evt.sessionId}`)
-							break
-
-						case 'text':
-							if (evt.text) {
-								lastText = evt.text
-							}
-							break
-
-						case 'completed':
-							console.log(`[jsonl-bridge] Subagent ${record.runId} completed`)
-							subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
-							void send(opts.chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
-							subagentRegistry.prune(opts.chatId)
-							void saveSubagentRegistry()
-							break
-
-						case 'error':
-							console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
-							subagentRegistry.markError(record.runId, evt.message)
-							void send(opts.chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
-							void saveSubagentRegistry()
-							break
-					}
-				})
-
-				session.on('exit', (code) => {
-					console.log(`[jsonl-bridge] Subagent ${record.runId} exited with code ${code}`)
-					const current = subagentRegistry.get(record.runId)
-					if (current && current.status === 'running') {
-						subagentRegistry.markError(record.runId, `Process exited with code ${code}`)
-						void send(opts.chatId, formatSubagentAnnouncement(subagentRegistry.get(record.runId)!))
-					}
-					resolve()
-				})
-
-				session.run(opts.task)
-			})
-		})
-
-		return { runId: record.runId, status: 'accepted' }
-	}
-
 	return {
 		close: () => {
 			cronService.stop()
@@ -1808,9 +1703,6 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		},
 		getManifests: () => manifests,
 		getSessionStore: () => sessionStore,
-		spawnSubagentForMcp,
-		getPrimaryChatId: () => primaryChatId,
-		getDefaultCli: () => config.defaultCli,
 	}
 }
 
