@@ -1,4 +1,5 @@
 import WebSocket from 'ws'
+import { spawn } from 'node:child_process'
 import type { GatewayEvent, IncomingMessage } from '../protocol/types.js'
 import { type CLIManifest, loadAllManifests } from './manifest.js'
 import {
@@ -86,6 +87,7 @@ type ParseCommandOptions = {
 	workingDirectory: string
 	cronService?: CronService
 	persistentStore?: PersistentSessionStore
+	allowedChatIds?: number[]
 }
 
 const modelAliases: Record<string, string> = {
@@ -119,8 +121,55 @@ const parseSlashCommand = (text: string): { command: string; rest: string } | nu
 	return { command, rest: match[2]?.trim() ?? '' }
 }
 
+const isAllowedChat = (chatId: number | string, allowedChatIds?: number[]): boolean => {
+	if (!allowedChatIds || allowedChatIds.length === 0) return true
+	const numericId =
+		typeof chatId === 'number' ? chatId : Number.parseInt(String(chatId), 10)
+	if (!Number.isFinite(numericId)) return false
+	return allowedChatIds.includes(numericId)
+}
+
+type CommandOutput = {
+	code: number
+	stdout: string
+	stderr: string
+}
+
+const runCommand = async (command: string, args: string[], cwd: string): Promise<CommandOutput> =>
+	new Promise((resolve, reject) => {
+		const child = spawn(command, args, { cwd, env: process.env })
+		let stdout = ''
+		let stderr = ''
+		child.stdout?.on('data', (data) => {
+			stdout += data.toString()
+		})
+		child.stderr?.on('data', (data) => {
+			stderr += data.toString()
+		})
+		child.on('error', (err) => reject(err))
+		child.on('close', (code) => {
+			resolve({ code: code ?? 0, stdout, stderr })
+		})
+	})
+
+const summarizeOutput = (output: CommandOutput, limit = 4000): string => {
+	const combined = [output.stdout.trim(), output.stderr.trim()].filter(Boolean).join('\n')
+	if (!combined) return ''
+	return combined.length > limit ? `${combined.slice(0, limit)}\n...` : combined
+}
+
 const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> => {
-	const { text, chatId, manifests, defaultCli, sessionStore, workingDirectory, cronService, persistentStore } = opts
+	const {
+		text,
+		chatId,
+		manifests,
+		defaultCli,
+		sessionStore,
+		workingDirectory,
+		cronService,
+		persistentStore,
+		allowedChatIds,
+	} = opts
 	const trimmed = text.trim()
 
 	if (trimmed.startsWith('/use ')) {
@@ -202,8 +251,16 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: `__INTERRUPT__:⏭️ Task interrupted.${queueMsg}`, async: true }
 	}
 
-	// /restart - gracefully restart the gateway (launchd will respawn)
+	// /update - pull latest main + rebuild + restart
 	const slashCommand = parseSlashCommand(trimmed)
+	if (slashCommand?.command === 'update') {
+		if (!isAllowedChat(chatId, allowedChatIds)) {
+			return { handled: true, response: 'Not authorized to run /update.' }
+		}
+		return { handled: true, response: '__UPDATE__', async: true }
+	}
+
+	// /restart - gracefully restart the gateway (launchd will respawn)
 	if (slashCommand?.command === 'restart') {
 		console.log('[jsonl-bridge] Restart requested via /restart command')
 		// Schedule exit after sending response (give time for message to be sent)
@@ -890,6 +947,60 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const typing = (chatId: number | string) =>
 		sendTyping(config.gatewayUrl, config.authToken, chatId)
 
+	const runUpdate = async (chatId: number | string): Promise<void> => {
+		if (!isAllowedChat(chatId, config.allowedChatIds)) {
+			await send(chatId, 'Not authorized to run /update.')
+			return
+		}
+
+		await send(chatId, '🔄 Update started (pulling origin/main)...')
+		const cwd = config.workingDirectory
+
+		const branchResult = await runCommand('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
+		if (branchResult.code !== 0) {
+			await send(chatId, `❌ Update failed: git rev-parse error\n${summarizeOutput(branchResult)}`)
+			return
+		}
+		const branch = branchResult.stdout.trim()
+		if (branch !== 'main') {
+			await send(chatId, `⚠️ /update only runs on main. Current: ${branch || 'unknown'}`)
+			return
+		}
+
+		const statusResult = await runCommand('git', ['status', '--porcelain'], cwd)
+		if (statusResult.code !== 0) {
+			await send(chatId, `❌ Update failed: git status error\n${summarizeOutput(statusResult)}`)
+			return
+		}
+		if (statusResult.stdout.trim()) {
+			await send(chatId, '⚠️ Working tree has local changes. Aborting update.')
+			return
+		}
+
+		const steps: Array<{ label: string; cmd: string; args: string[] }> = [
+			{ label: 'fetch', cmd: 'git', args: ['fetch', 'origin', 'main'] },
+			{ label: 'pull', cmd: 'git', args: ['pull', '--rebase', 'origin', 'main'] },
+			{ label: 'install', cmd: 'pnpm', args: ['install'] },
+			{ label: 'build', cmd: 'pnpm', args: ['run', 'build'] },
+		]
+
+		for (const step of steps) {
+			const result = await runCommand(step.cmd, step.args, cwd)
+			if (result.code !== 0) {
+				await send(
+					chatId,
+					`❌ Update failed during ${step.label}\n${summarizeOutput(result)}`
+				)
+				return
+			}
+		}
+
+		await send(chatId, '✅ Update complete. Restarting gateway...')
+		setTimeout(() => {
+			process.kill(process.pid, 'SIGTERM')
+		}, 500)
+	}
+
 	// Track the primary chat for cron job delivery and MCP spawn
 	// Initialize from config if available so MCP can spawn before any Telegram message
 	let primaryChatId: number | string | null = config.allowedChatIds?.[0] ?? null
@@ -1350,8 +1461,13 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			workingDirectory: config.workingDirectory,
 			cronService,
 			persistentStore,
+			allowedChatIds: config.allowedChatIds,
 		})
 		if (cmdResult.handled) {
+			if ('async' in cmdResult && cmdResult.response === '__UPDATE__') {
+				void runUpdate(chatId)
+				return
+			}
 			if ('async' in cmdResult && cmdResult.response === '__SPAWN__') {
 				const spawnCmd = parseSpawnCommand(prompt)
 				if (spawnCmd) {

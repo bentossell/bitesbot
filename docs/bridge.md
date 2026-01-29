@@ -44,6 +44,7 @@ Session and model:
 - `/stream` or `/stream on|off` - toggle streaming output
 - `/verbose` or `/verbose on|off` - toggle tool output
 - `/restart` - restart the gateway process
+- `/update` - pull origin/main, install deps, build, restart
 
 Concepts:
 

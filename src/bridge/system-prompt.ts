@@ -54,7 +54,7 @@ export const buildSystemPrompt = (params: SystemPromptParams): string => {
 
 	if (!isMinimal) {
 		addSection(lines, '## Commands', [
-			'/new, /stop, /interrupt, /skip, /status, /use, /model, /stream, /verbose, /restart',
+			'/new, /stop, /interrupt, /skip, /status, /use, /model, /stream, /verbose, /restart, /update',
 			'/spawn, /subagents, /cron, /concepts, /related, /file, /aliases',
 		])
 
@@ -73,8 +73,8 @@ export const buildSystemPrompt = (params: SystemPromptParams): string => {
 
 		addSection(lines, '## Updates', [
 			'Only update the bot when the user explicitly asks.',
-			'Follow ops docs for the deployment flow.',
-			'After updating, restart the gateway (e.g., `pnpm run gateway:restart`).',
+			'Use /update to pull origin/main, install deps, build, and restart the gateway.',
+			'If the repo is not on main or has local changes, abort and report.',
 		])
 
 		if (params.memoryEnabled) {
