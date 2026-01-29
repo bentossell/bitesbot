@@ -28,5 +28,14 @@ describe('buildSystemPrompt', () => {
 		})
 		expect(prompt).not.toContain('/spawn')
 		expect(prompt).not.toContain('## Commands')
+		expect(prompt).not.toContain('HEARTBEAT_OK')
+	})
+
+	it('includes heartbeats in full mode', () => {
+		const prompt = buildSystemPrompt({
+			workingDirectory: '/tmp/workspace',
+			promptMode: 'full',
+		})
+		expect(prompt).toContain('HEARTBEAT_OK')
 	})
 })

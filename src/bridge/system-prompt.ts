@@ -64,6 +64,19 @@ export const buildSystemPrompt = (params: SystemPromptParams): string => {
 			'Do not include any other text before or after /spawn.',
 		])
 
+		addSection(lines, '## Heartbeats', [
+			'Heartbeat prompts may ask you to check HEARTBEAT.md and run scheduled tasks.',
+			'If nothing needs attention, reply exactly: HEARTBEAT_OK',
+			'Do not include any other text with HEARTBEAT_OK.',
+			'If action is needed, respond with the alert text and omit HEARTBEAT_OK.',
+		])
+
+		addSection(lines, '## Updates', [
+			'Only update the bot when the user explicitly asks.',
+			'Follow ops docs for the deployment flow.',
+			'After updating, restart the gateway (e.g., `pnpm run gateway:restart`).',
+		])
+
 		if (params.memoryEnabled) {
 			addSection(lines, '## Memory Tools', buildMemoryToolInstructions().split('\n'))
 		}
