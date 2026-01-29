@@ -21,6 +21,8 @@ workingDirFlag: --cwd
 resume:
   flag: --resume
   sessionArg: last
+systemPromptArg: --append-system-prompt
+systemPromptWhen: first
 `)
 		
 		try {
@@ -31,6 +33,8 @@ resume:
 			expect(manifest.inputMode).toBe('arg')
 			expect(manifest.workingDirFlag).toBe('--cwd')
 			expect(manifest.resume).toEqual({ flag: '--resume', sessionArg: 'last' })
+			expect(manifest.systemPromptArg).toBe('--append-system-prompt')
+			expect(manifest.systemPromptWhen).toBe('first')
 		} finally {
 			await rm(tempDir, { recursive: true })
 		}

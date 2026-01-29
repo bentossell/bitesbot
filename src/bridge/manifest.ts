@@ -60,6 +60,8 @@ export type CLIManifest = {
 	workingDirFlag?: string
 	resume?: ResumeConfig
 	model?: ModelConfig
+	systemPromptArg?: string
+	systemPromptWhen?: 'first' | 'always' | 'never'
 }
 
 const validateManifest = (data: unknown, filename: string): CLIManifest => {
@@ -75,6 +77,20 @@ const validateManifest = (data: unknown, filename: string): CLIManifest => {
 	if (obj.inputMode === 'arg') inputMode = 'arg'
 	else if (obj.inputMode === 'stdin') inputMode = 'stdin'
 
+	const systemPromptArg =
+		typeof obj.systemPromptArg === 'string' ? obj.systemPromptArg.trim() : undefined
+	const systemPromptWhenRaw =
+		typeof obj.systemPromptWhen === 'string' ? obj.systemPromptWhen.trim() : undefined
+	const systemPromptWhen = systemPromptWhenRaw as CLIManifest['systemPromptWhen'] | undefined
+	if (
+		systemPromptWhenRaw &&
+		systemPromptWhen !== 'first' &&
+		systemPromptWhen !== 'always' &&
+		systemPromptWhen !== 'never'
+	) {
+		throw new Error(`${filename}: invalid 'systemPromptWhen'`)
+	}
+
 	return {
 		name: obj.name as string,
 		command: obj.command as string,
@@ -83,6 +99,8 @@ const validateManifest = (data: unknown, filename: string): CLIManifest => {
 		workingDirFlag: obj.workingDirFlag as string | undefined,
 		resume: obj.resume as ResumeConfig | undefined,
 		model: obj.model as ModelConfig | undefined,
+		systemPromptArg,
+		systemPromptWhen,
 	}
 }
 

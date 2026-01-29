@@ -3,6 +3,8 @@ command: /opt/homebrew/bin/claude
 args:
   - --dangerously-skip-permissions
 inputMode: jsonl
+systemPromptArg: --append-system-prompt
+systemPromptWhen: first
 
 resume:
   flag: --resume

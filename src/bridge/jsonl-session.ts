@@ -114,7 +114,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	run(
 		prompt: string,
 		resume?: ResumeToken,
-		options?: { model?: string }
+		options?: { model?: string; systemPrompt?: string }
 	): void {
 		if (this.process) {
 			console.log(`[jsonl-session] Process already running for ${this.chatId}`)
@@ -137,6 +137,25 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			if (!modelId) return
 			args.push(modelConfig.flag, modelId)
 		}
+		type SystemPromptPayload =
+			| { useArg: true; systemPromptArg: string; systemPrompt: string; prompt: string }
+			| { useArg: false; prompt: string }
+
+		const resolveSystemPrompt = (): SystemPromptPayload => {
+			const systemPrompt = options?.systemPrompt?.trim()
+			if (!systemPrompt) return { useArg: false, prompt: prompt }
+			const when = this.manifest.systemPromptWhen ?? 'first'
+			const isNewSession = !resume?.sessionId
+			if (when === 'never') return { useArg: false, prompt }
+			if (when === 'first' && !isNewSession) return { useArg: false, prompt }
+			const systemPromptArg = this.manifest.systemPromptArg?.trim()
+			if (systemPromptArg) {
+				return { useArg: true, systemPromptArg, systemPrompt, prompt }
+			}
+			return { useArg: false, prompt: `${systemPrompt}\n\n${prompt}` }
+		}
+		const systemPromptPayload = resolveSystemPrompt()
+		const promptText = systemPromptPayload.prompt
 		let args: string[]
 
 		if (this.cli === 'droid') {
@@ -152,14 +171,20 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			appendResumeArgs(args)
 			appendWorkingDirArgs(args)
 			appendModelArgs(args)
-			args.push(prompt)
+			if (systemPromptPayload.useArg) {
+				args.push(systemPromptPayload.systemPromptArg, systemPromptPayload.systemPrompt)
+			}
+			args.push(promptText)
 		} else if (this.cli === 'codex') {
 			// Codex uses: codex exec --json --dangerously-bypass-approvals-and-sandbox "prompt"
 			args = [...this.manifest.args]
 			appendWorkingDirArgs(args)
 			appendModelArgs(args)
 			appendResumeArgs(args)
-			args.push(prompt)
+			if (systemPromptPayload.useArg) {
+				args.push(systemPromptPayload.systemPromptArg, systemPromptPayload.systemPrompt)
+			}
+			args.push(promptText)
 		} else {
 			// Claude uses: claude -p --output-format stream-json --verbose "prompt"
 			args = [
@@ -171,7 +196,10 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			appendResumeArgs(args)
 			appendWorkingDirArgs(args)
 			appendModelArgs(args)
-			args.push(prompt)
+			if (systemPromptPayload.useArg) {
+				args.push(systemPromptPayload.systemPromptArg, systemPromptPayload.systemPrompt)
+			}
+			args.push(promptText)
 		}
 
 		console.log(`[jsonl-session] Spawning: ${this.manifest.command} ${args.slice(0, -1).join(' ')} "<prompt>"`)

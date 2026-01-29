@@ -42,6 +42,7 @@ import {
 	runMemoryTool,
 	type MemoryToolCall,
 } from '../memory/tools.js'
+import { buildSystemPrompt } from './system-prompt.js'
 import { createConceptsIndex, getRelatedFilesForTerms } from '../workspace/concepts-index.js'
 import {
 	extractConceptsFromText,
@@ -641,6 +642,7 @@ type SpawnSubagentOptions = {
 	subagentFallbackCli?: string
 	workingDirectory: string
 	model?: string
+	systemPrompt?: string
 	send: (chatId: number | string, text: string) => Promise<void>
 	logMessage?: (
 		chatId: number | string,
@@ -796,7 +798,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 			})
 
 			// Run the subagent (no resume token - fresh session)
-			session.run(task, undefined, { model: opts.model })
+			session.run(task, undefined, { model: opts.model, systemPrompt: opts.systemPrompt })
 		})
 	})
 
@@ -811,6 +813,16 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	// Initialize lane-based command queue with default concurrency
 	initDefaultLanes()
 	console.log('[jsonl-bridge] Initialized command lanes (Main: 1, Subagent: 4, Cron: 1)')
+
+	const fullSystemPrompt = buildSystemPrompt({
+		workingDirectory: config.workingDirectory,
+		promptMode: 'full',
+		memoryEnabled: config.memory?.enabled ?? false,
+	})
+	const minimalSystemPrompt = buildSystemPrompt({
+		workingDirectory: config.workingDirectory,
+		promptMode: 'minimal',
+	})
 
 	const manifests = await loadAllManifests(config.adaptersDir)
 	if (manifests.size === 0) {
@@ -1134,6 +1146,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 								subagentFallbackCli: config.subagentFallbackCli,
 								workingDirectory: config.workingDirectory,
 								model: settings.model,
+								systemPrompt: minimalSystemPrompt,
 								send,
 								logMessage: persistentStore.logMessage,
 								parentSessionId: currentSessionId,
@@ -1254,7 +1267,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 		// Run with resume token if we have one
 		const settings = getSettings()
-		session.run(prompt, resumeToken, { model: settings.model })
+		session.run(prompt, resumeToken, { model: settings.model, systemPrompt: fullSystemPrompt })
 	}
 
 	const flushQueue = async (chatId: number | string) => {
@@ -1356,6 +1369,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						subagentFallbackCli: config.subagentFallbackCli,
 						workingDirectory: config.workingDirectory,
 						model: settings.model,
+						systemPrompt: minimalSystemPrompt,
 						send,
 						logMessage: persistentStore.logMessage,
 					})
@@ -1395,6 +1409,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				subagentFallbackCli: config.subagentFallbackCli,
 				workingDirectory: config.workingDirectory,
 				model: settings.model,
+				systemPrompt: minimalSystemPrompt,
 				send,
 				logMessage: persistentStore.logMessage,
 			})
@@ -1522,7 +1537,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					}
 				})
 
-				session.run(job.message, undefined, { model: modelOverride })
+				session.run(job.message, undefined, { model: modelOverride, systemPrompt: fullSystemPrompt })
 			})
 		})
 	}

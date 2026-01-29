@@ -22,6 +22,14 @@ Key fields:
 - `inputMode` - `jsonl`, `stdin`, or `arg`
 - `workingDirFlag` - optional flag for working directory
 - `resume`, `model` - optional flags for resume/model
+- `systemPromptArg` - optional flag to pass the system prompt to the CLI
+- `systemPromptWhen` - `first`, `always`, or `never` (defaults to `first`)
+
+## System prompt
+
+The bridge builds a system prompt in `src/bridge/system-prompt.ts` and injects it on new sessions.
+If `systemPromptArg` is configured for the adapter, the prompt is passed as a CLI flag. Otherwise
+the prompt is prefixed to the first user message. System prompts are skipped on resumed sessions.
 
 ## Telegram commands
 
