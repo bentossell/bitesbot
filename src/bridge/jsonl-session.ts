@@ -114,7 +114,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	run(
 		prompt: string,
 		resume?: ResumeToken,
-		options?: { specMode?: boolean; model?: string }
+		options?: { model?: string }
 	): void {
 		if (this.process) {
 			console.log(`[jsonl-session] Process already running for ${this.chatId}`)
@@ -152,11 +152,6 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			appendResumeArgs(args)
 			appendWorkingDirArgs(args)
 			appendModelArgs(args)
-			// Add spec mode flag if enabled and configured
-			if (options?.specMode && this.manifest.specMode?.flag) {
-				const flagParts = this.manifest.specMode.flag.split(' ')
-				args.push(...flagParts)
-			}
 			args.push(prompt)
 		} else if (this.cli === 'codex') {
 			// Codex uses: codex exec --json --dangerously-bypass-approvals-and-sandbox "prompt"
@@ -182,11 +177,6 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			appendResumeArgs(args)
 			appendWorkingDirArgs(args)
 			appendModelArgs(args)
-			// Add spec mode flag if enabled and configured
-			if (options?.specMode && this.manifest.specMode?.flag) {
-				const flagParts = this.manifest.specMode.flag.split(' ')
-				args.push(...flagParts)
-			}
 			args.push(prompt)
 		}
 
