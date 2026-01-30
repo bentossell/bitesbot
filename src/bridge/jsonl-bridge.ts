@@ -64,6 +64,7 @@ import {
 } from '../workspace/concepts.js'
 import { getRelativePath } from '../workspace/path-utils.js'
 import { buildBootContext } from '../workspace/boot-context.js'
+import type { Skill } from '../skills/index.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -96,6 +97,8 @@ type ParseCommandOptions = {
 	workingDirectory: string
 	cronService?: CronService
 	persistentStore?: PersistentSessionStore
+	skills?: Map<string, Skill>
+	reloadSkills?: () => Promise<Map<string, Skill>>
 }
 
 const parseSlashCommand = (text: string): { command: string; rest: string } | null => {
