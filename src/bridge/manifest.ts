@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execSync as childExecSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -20,7 +20,7 @@ const cliExists = (command: string): boolean => {
 	}
 	// Otherwise use which
 	try {
-		execSync(`which ${command}`, { stdio: 'ignore' })
+		childExecSync(`which ${command}`, { stdio: 'ignore' })
 		return true
 	} catch {
 		return false
@@ -35,7 +35,7 @@ const resolveCommandPath = (command: string): string => {
 	}
 	// Otherwise resolve via which
 	try {
-		const result = execSync(`which ${command}`, { encoding: 'utf-8' })
+		const result = childExecSync(`which ${command}`, { encoding: 'utf-8' })
 		return result.trim()
 	} catch {
 		return command

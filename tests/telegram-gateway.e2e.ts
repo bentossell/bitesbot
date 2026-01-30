@@ -185,6 +185,71 @@ const seedWorkspacePlaceholders = async (workspaceDir: string) => {
 	}
 }
 
+const runSubagentConcurrencyTest = async (
+	client: TelegramClient,
+	botUsername: string,
+	cli: string,
+): Promise<void> => {
+	const token = `${Date.now()}`
+	const label = `Subagent-${token}`
+	const taskBody = cli === 'claude'
+		? `Write 12 bullet points about shipping a feature. Use 3 section headings with 4 bullets each. Each bullet must be at least 10 words, and finish with sub-${token}:42.`
+		: `Write 36 bullet points about shipping a feature. Use 6 section headings with 6 bullets each. Each bullet must be at least 16 words, and finish with a 6-line poem. End with sub-${token}:42.`
+
+	await client.sendMessage(botUsername, { message: `/use ${cli}` })
+	await waitForBotMessage(client, botUsername, `Switched to ${cli}.`, SHORT_TIMEOUT)
+
+	const spawnPrompt = `/spawn --label "${label}" "${taskBody}"`
+	await client.sendMessage(botUsername, { message: spawnPrompt })
+	const spawnAck = await waitForNewBotMessageWithMeta(
+		client,
+		botUsername,
+		Date.now(),
+		(text) => text.includes(`🚀 Spawned: ${label}`),
+		LONG_TIMEOUT,
+	)
+	if (!spawnAck.text.includes(`🚀 Spawned: ${label}`)) {
+		throw new Error('Subagent spawn acknowledgment missing label')
+	}
+
+	const startedMsg = await waitForNewBotMessageWithMeta(
+		client,
+		botUsername,
+		spawnAck.timestamp,
+		(text) => text.includes(`🔄 Started: ${label}`),
+		LONG_TIMEOUT,
+	)
+	if (!startedMsg.text.includes(`🔄 Started: ${label}`)) {
+		throw new Error('Subagent start message missing label')
+	}
+
+	const followPrompt = `Main2-${token}: Reply with exactly "main-${token}:6".`
+	await client.sendMessage(botUsername, { message: followPrompt })
+	const followReply = await waitForNewBotMessageWithMeta(
+		client,
+		botUsername,
+		startedMsg.timestamp,
+		(text) => text.includes(`main-${token}:6`),
+		LONG_TIMEOUT,
+	)
+	const subagentDone = await waitForNewBotMessageWithMeta(
+		client,
+		botUsername,
+		followReply.timestamp,
+		(text) => text.includes(`✅ ${label}`),
+		LONG_TIMEOUT,
+	)
+	if (!followReply.text.includes(`main-${token}:6`)) {
+		throw new Error('Main response missing expected token')
+	}
+	if (!subagentDone.text.includes(`✅ ${label}`)) {
+		throw new Error('Subagent completion missing label')
+	}
+	if (!(startedMsg.id < followReply.id && followReply.id < subagentDone.id)) {
+		throw new Error('Subagent and main message ordering did not match expected sequence')
+	}
+}
+
 // Single gateway instance - Telegram only allows one poller per bot token
 // Skip in CI - these tests require real Telegram credentials and are for local use only
 describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
@@ -431,52 +496,15 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 	// ============================================
 
 	it.skipIf(!hasDroid)('spawns a droid subagent while main droid session responds', async () => {
-		const token = `${Date.now()}`
-		const label = `Subagent-${token}`
+		await runSubagentConcurrencyTest(client, botUsername, 'droid')
+	}, LONG_TIMEOUT)
 
-		await client.sendMessage(botUsername, { message: '/use droid' })
-		await waitForBotMessage(client, botUsername, 'Switched to droid.', SHORT_TIMEOUT)
+	it('spawns a claude subagent while main claude session responds', async () => {
+		await runSubagentConcurrencyTest(client, botUsername, 'claude')
+	}, LONG_TIMEOUT)
 
-		const spawnPrompt = `/spawn --label "${label}" "Write 36 bullet points about shipping a feature. Use 6 section headings with 6 bullets each. Each bullet must be at least 16 words, and finish with a 6-line poem. End with sub-${token}:42."`
-		await client.sendMessage(botUsername, { message: spawnPrompt })
-		const spawnAck = await waitForNewBotMessageWithMeta(
-			client,
-			botUsername,
-			Date.now(),
-			(text) => text.includes(`🚀 Spawned: ${label}`),
-			LONG_TIMEOUT,
-		)
-		expect(spawnAck.text).toContain(`🚀 Spawned: ${label}`)
-
-		const startedMsg = await waitForNewBotMessageWithMeta(
-			client,
-			botUsername,
-			spawnAck.timestamp,
-			(text) => text.includes(`🔄 Started: ${label}`),
-			LONG_TIMEOUT,
-		)
-		expect(startedMsg.text).toContain(`🔄 Started: ${label}`)
-
-		const followPrompt = `Main2-${token}: Reply with exactly "main-${token}:6".`
-		await client.sendMessage(botUsername, { message: followPrompt })
-		const followReply = await waitForNewBotMessageWithMeta(
-			client,
-			botUsername,
-			startedMsg.timestamp,
-			(text) => text.includes(`main-${token}:6`),
-			LONG_TIMEOUT,
-		)
-		const subagentDone = await waitForNewBotMessageWithMeta(
-			client,
-			botUsername,
-			followReply.timestamp,
-			(text) => text.includes(`✅ ${label}`),
-			LONG_TIMEOUT,
-		)
-		expect(followReply.text).toContain(`main-${token}:6`)
-		expect(subagentDone.text).toContain(`✅ ${label}`)
-		expect(startedMsg.id).toBeLessThan(followReply.id)
-		expect(followReply.id).toBeLessThan(subagentDone.id)
+	it.skipIf(!hasCodex)('spawns a codex subagent while main codex session responds', async () => {
+		await runSubagentConcurrencyTest(client, botUsername, 'codex')
 	}, LONG_TIMEOUT)
 
 	it('sends a prompt and receives an AI response (claude)', async () => {

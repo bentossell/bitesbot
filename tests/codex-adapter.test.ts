@@ -22,7 +22,7 @@ inputMode: arg
 workingDirFlag: --cd
 model:
   flag: --model
-  default: gpt-5.2
+  default: gpt-5.2-codex
 `)
 		
 		try {
@@ -38,7 +38,7 @@ model:
 			expect(manifest.workingDirFlag).toBe('--cd')
 			expect(manifest.model).toEqual({
 				flag: '--model',
-				default: 'gpt-5.2'
+				default: 'gpt-5.2-codex'
 			})
 		} finally {
 			await rm(tempDir, { recursive: true })
@@ -58,13 +58,13 @@ args:
 inputMode: arg
 model:
   flag: --model
-  default: gpt-5.2
+  default: gpt-5.2-codex
 `)
 		
 		try {
 			const manifest = await loadManifest(manifestPath)
 			expect(manifest.model?.flag).toBe('--model')
-			expect(manifest.model?.default).toBe('gpt-5.2')
+			expect(manifest.model?.default).toBe('gpt-5.2-codex')
 		} finally {
 			await rm(tempDir, { recursive: true })
 		}
@@ -94,16 +94,16 @@ workingDirFlag: --cd
 })
 
 describe('Codex model aliases', () => {
-	it('maps codex alias to gpt-5.2', () => {
+it('maps codex alias to gpt-5.2-codex', () => {
 		const modelAliases: Record<string, string> = {
 			opus: 'claude-opus-4-5-20251101',
 			sonnet: 'claude-sonnet-4-5-20250929',
 			haiku: 'claude-haiku-4-5-20251001',
-			codex: 'gpt-5.2',
+			codex: 'gpt-5.2-codex',
 			'codex-max': 'gpt-5.1-codex-max',
 		}
 		
-		expect(modelAliases['codex']).toBe('gpt-5.2')
+		expect(modelAliases['codex']).toBe('gpt-5.2-codex')
 		expect(modelAliases['codex-max']).toBe('gpt-5.1-codex-max')
 	})
 })

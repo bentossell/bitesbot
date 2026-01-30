@@ -24,7 +24,7 @@ const createManifest = (): CLIManifest => ({
 	args: ['--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
 	inputMode: 'arg',
 	workingDirFlag: '--cd',
-	model: { flag: '--model', default: 'gpt-5.2' },
+	model: { flag: '--model', default: 'gpt-5.2-codex' },
 })
 
 const createSession = async (workingDir: string) => {
@@ -52,7 +52,7 @@ describe('Codex session args', () => {
 			'--cd',
 			'/workdir',
 			'--model',
-			'gpt-5.2',
+			'gpt-5.2-codex',
 			'hello',
 		])
 	})
@@ -73,7 +73,7 @@ describe('Codex session args', () => {
 			'--cd',
 			'/workdir',
 			'--model',
-			'gpt-5.2',
+			'gpt-5.2-codex',
 			'sess-123',
 			'next',
 		])

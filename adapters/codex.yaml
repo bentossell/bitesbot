@@ -10,4 +10,4 @@ workingDirFlag: --cd
 
 model:
   flag: --model
-  default: gpt-5.2
+  default: gpt-5.2-codex

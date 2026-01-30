@@ -119,7 +119,7 @@ const MODEL_ALIASES: Record<string, string> = {
 	sonnet: 'claude-sonnet-4-5-20250929',
 	haiku: 'claude-haiku-4-5-20251001',
 	// OpenAI Codex models
-	codex: 'gpt-5.2',
+	codex: 'gpt-5.2-codex',
 	'codex-max': 'gpt-5.1-codex-max',
 	// Gemini
 	gemini: 'gemini-3-pro-preview',
@@ -142,8 +142,13 @@ const resolveModelForCli = (cli: string, model?: string): string | undefined => 
 		return resolved
 	}
 
-	if (cli === 'claude' || cli === 'droid') {
+	if (cli === 'claude') {
 		return normalized.includes('claude') ? resolved : undefined
+	}
+
+	if (cli === 'droid') {
+		if (normalized.includes('claude') || normalized.includes('codex')) return resolved
+		return undefined
 	}
 
 	if (cli.startsWith('gemini')) {
