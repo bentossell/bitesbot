@@ -5,3 +5,6 @@ dist/
 .DS_Store
 *.log
 *.pid
+
+# Generated launchd plist (use deploy/setup-launchd.sh to generate)
+deploy/launchd.plist

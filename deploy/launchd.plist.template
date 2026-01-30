@@ -3,14 +3,14 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.bentossell.bitesbot</string>
+    <string>{{LAUNCHD_LABEL}}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/mini/repos/bitesbot/deploy/launchd-run.sh</string>
+        <string>{{PROJECT_ROOT}}/deploy/launchd-run.sh</string>
         <string>start</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/mini/repos/bitesbot</string>
+    <string>{{PROJECT_ROOT}}</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -18,21 +18,21 @@
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>StandardOutPath</key>
-    <string>/Users/mini/logs/bitesbot.log</string>
+    <string>{{HOME}}/logs/bitesbot.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/mini/logs/bitesbot.err</string>
+    <string>{{HOME}}/logs/bitesbot.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/mini/.volta/bin:/Users/mini/.asdf/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>{{PATH}}</string>
         <key>HOME</key>
-        <string>/Users/mini</string>
+        <string>{{HOME}}</string>
         <key>TG_GATEWAY_CONFIG</key>
-        <string>/Users/mini/.config/tg-gateway/config.json</string>
+        <string>{{HOME}}/.config/tg-gateway/config.json</string>
         <key>TG_GATEWAY_LAUNCHD_LABEL</key>
-        <string>com.bentossell.bitesbot</string>
+        <string>{{LAUNCHD_LABEL}}</string>
         <key>TG_GATEWAY_LAUNCHD_PLIST</key>
-        <string>/Users/mini/Library/LaunchAgents/com.bentossell.bitesbot.plist</string>
+        <string>{{HOME}}/Library/LaunchAgents/{{LAUNCHD_LABEL}}.plist</string>
     </dict>
 </dict>
 </plist>
