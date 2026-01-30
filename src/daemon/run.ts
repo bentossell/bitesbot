@@ -36,6 +36,7 @@ export const runGateway = async (options: RunOptions = {}) => {
 			subagentFallbackCli: config.bridge.subagentFallbackCli,
 			workingDirectory: config.bridge.workingDirectory,
 			allowedChatIds: config.allowedChatIds,
+			envFile: config.bridge.envFile,
 		})
 		console.log('Bridge enabled, default CLI:', config.bridge.defaultCli)
 
