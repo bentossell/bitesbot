@@ -58,6 +58,22 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 | 20 | Telegram-like web UI | `claude/telegram-bot-web-ui-n51Rr` |
 | 8 | Desktop wizard and workspace bootstrap | `feat/desktop-app-ui-wizard` |
 
+## PR Review (Non-UI)
+
+### Overlaps / Conflicts
+
+- **#29 vs #30 vs #27** — overlapping files in `src/bridge/session-registry.ts` and `src/bridge/sessions-tools.ts`; #29 includes cross-session messaging work that appears to overlap #30.
+- **#24 vs #29/#30** — similar cross-session messaging features with overlapping bridge/session tooling.
+- **#22 vs #21** — #22 includes Codex work, making #21 redundant if #22 lands.
+- **#25 vs #26** — both modify `src/cron/service.ts`; expect a merge conflict or rebase requirement.
+
+### Quick Wins / Suggested Order
+
+1. **#28** — isolated workspace registry changes.
+2. **#22 or #21** — choose #22 if we want Codex + Pi together; otherwise #21 only.
+3. **#26 then #25** — merge/rebase to avoid `cron/service.ts` conflict.
+4. **Session/bridge stack** — pick a primary thread (#29 or #24/#30) and drop/merge overlaps.
+
 ## Recommended Merge Order (Assume All Today)
 
 1. #27 — Session management registry/lifecycle

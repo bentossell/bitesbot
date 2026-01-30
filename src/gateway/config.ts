@@ -29,6 +29,7 @@ export type LoadConfigOptions = {
 }
 
 const DEFAULT_PORT = 8787
+const DEFAULT_WORKSPACE_DIR = join(homedir(), 'bites')
 const DEFAULT_MEMORY_MAX_RESULTS = 6
 const DEFAULT_MEMORY_MIN_SCORE = 0.35
 const DEFAULT_LINKS_MAX_BACKLINKS = 2
@@ -100,7 +101,7 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 		enabled: env.TG_GATEWAY_BRIDGE_ENABLED === 'true' || fileBridge.enabled === true,
 		defaultCli: env.TG_GATEWAY_DEFAULT_CLI ?? fileBridge.defaultCli ?? 'claude',
 		subagentFallbackCli: env.TG_GATEWAY_SUBAGENT_FALLBACK_CLI ?? fileBridge.subagentFallbackCli,
-		workingDirectory: env.TG_GATEWAY_WORKING_DIR ?? fileBridge.workingDirectory ?? process.cwd(),
+		workingDirectory: env.TG_GATEWAY_WORKING_DIR ?? fileBridge.workingDirectory ?? DEFAULT_WORKSPACE_DIR,
 		adaptersDir: env.TG_GATEWAY_ADAPTERS_DIR ?? fileBridge.adaptersDir ?? join(process.cwd(), 'adapters'),
 	}
 
