@@ -150,6 +150,9 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 	}
 
 	if (trimmed === '/new') {
+		const session = sessionStore.get(chatId)
+		const currentCli = sessionStore.getActiveCli(chatId) || session?.cli || defaultCli
+
 		// Sync session to memory before clearing
 		try {
 			const result = await syncSessionToMemory(workingDirectory)
@@ -160,7 +163,11 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 			console.error('[jsonl-bridge] Failed to sync memory on /new:', err)
 		}
 		
-		const session = sessionStore.get(chatId)
+		sessionStore.clearResumeToken(chatId, currentCli)
+		if (persistentStore) {
+			await persistentStore.clearResumeToken(chatId, currentCli)
+		}
+		
 		if (session) {
 			session.terminate()
 			sessionStore.delete(chatId)
@@ -811,23 +818,10 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 				let prompt = task
 				// Deterministic boot context for fresh subagents
 				try {
-					const boot = await buildBootContext(workingDirectory)
+				const boot = await buildBootContext(workingDirectory, { mode: 'subagent' })
 					if (boot) prompt = `${boot}\n\n${prompt}`
 				} catch {
 					// ignore
-				}
-				// Memory tooling/enforcement for subagents too
-				if (opts.memory?.enabled) {
-					try {
-						const memoryRecall = await buildMemoryRecall(task, opts.memory)
-						if (memoryRecall) prompt = `${memoryRecall}\n\n${prompt}`
-						prompt = `${buildMemoryToolInstructions()}\n\n${prompt}`
-						if (isRecallQuestion(task)) {
-							prompt = `${buildRecallEnforcementHint()}\n\n${prompt}`
-						}
-					} catch {
-						// ignore
-					}
 				}
 				session.run(prompt, undefined, { model: opts.model })
 			}
@@ -924,21 +918,14 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		source?: 'user' | 'cron' | 'memory-tool'
 		cronJobId?: string
 		memoryToolDepth?: number
+		isPrivateChat?: boolean
 	}
 
 	const processMessage = async (chatId: number | string, prompt: string, context?: MessageContext) => {
 		const t0 = Date.now()
 		const originalPrompt = prompt
+		const isMainSession = context?.isPrivateChat === true
 		let cronMarked = false
-
-		// Pre-threshold durable flush (best-effort; never blocks the user)
-		try {
-			if (config.memory?.enabled) {
-				void maybeAutoFlushSessionToMemory(config.workingDirectory)
-			}
-		} catch {
-			// ignore
-		}
 
 		// Use active CLI for this chat, or default (check persistent store first)
 		const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
@@ -947,9 +934,9 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const resumeToken = sessionStore.getResumeToken(chatId, cliName)
 
 		// Deterministic boot context for fresh sessions (after restart or /new)
-		if (!resumeToken) {
+		if (!resumeToken && isMainSession) {
 			try {
-				const boot = await buildBootContext(config.workingDirectory)
+				const boot = await buildBootContext(config.workingDirectory, { mode: 'main' })
 				if (boot) {
 					prompt = `${boot}\n\n${prompt}`
 				}
@@ -965,8 +952,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			console.log(`[jsonl-bridge] Injected subagent results into prompt`)
 		}
 
-		const recallRequired = config.memory?.enabled === true && context?.source !== 'memory-tool' && isRecallQuestion(originalPrompt)
-		if (config.memory?.enabled) {
+		const recallRequired =
+			config.memory?.enabled === true &&
+			isMainSession &&
+			context?.source !== 'memory-tool' &&
+			isRecallQuestion(originalPrompt)
+		if (config.memory?.enabled && isMainSession) {
 			try {
 				const memoryRecall = await buildMemoryRecall(originalPrompt, config.memory)
 				if (memoryRecall) {
@@ -1240,14 +1231,14 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 							}
 
 							void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
-							// Post-turn durable flush (best-effort)
-							try {
-								if (config.memory?.enabled) {
-									void maybeAutoFlushSessionToMemory(config.workingDirectory)
-								}
-							} catch {
-								// ignore
+						// Post-turn durable flush (best-effort)
+						try {
+							if (config.memory?.enabled && isMainSession) {
+								void maybeAutoFlushSessionToMemory(config.workingDirectory)
 							}
+						} catch {
+							// ignore
+						}
 						
 						// Extract and send any file attachments from the response (for non-streaming case)
 						const { files, remainingText } = extractSendfileCommands(evt.answer)
@@ -1340,7 +1331,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		if (!text && !attachments?.length) return
 		const raw = typeof message.raw === 'object' && message.raw ? (message.raw as Record<string, unknown>) : undefined
 		const cronJobId = raw?.cron === true && typeof raw.jobId === 'string' ? raw.jobId : undefined
-		const context: MessageContext | undefined = cronJobId ? { source: 'cron', cronJobId } : undefined
+		const chat = typeof raw?.chat === 'object' && raw.chat ? (raw.chat as Record<string, unknown>) : undefined
+		const chatType = typeof chat?.type === 'string' ? chat.type : undefined
+		const isPrivateChat = chatType === 'private'
+		const context: MessageContext | undefined = cronJobId
+			? { source: 'cron', cronJobId, isPrivateChat }
+			: { isPrivateChat }
 		if (!context?.cronJobId) {
 			void triggerHeartbeat()
 		}

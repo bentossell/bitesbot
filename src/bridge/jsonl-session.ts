@@ -420,7 +420,12 @@ export type QueuedMessage = {
 	text: string
 	attachments?: Array<{ localPath?: string }>
 	createdAt: number
-	context?: { source?: 'user' | 'cron' | 'memory-tool'; cronJobId?: string; memoryToolDepth?: number }
+	context?: {
+		source?: 'user' | 'cron' | 'memory-tool'
+		cronJobId?: string
+		memoryToolDepth?: number
+		isPrivateChat?: boolean
+	}
 }
 
 export type SessionStore = {
@@ -433,6 +438,7 @@ export type SessionStore = {
 	delete: (chatId: number | string) => void
 	getResumeToken: (chatId: number | string, cli: string) => ResumeToken | undefined
 	setResumeToken: (chatId: number | string, cli: string, token: ResumeToken) => void
+	clearResumeToken: (chatId: number | string, cli: string) => void
 	getActiveCli: (chatId: number | string) => string | undefined
 	setActiveCli: (chatId: number | string, cli: string) => void
 	isBusy: (chatId: number | string) => boolean
@@ -457,6 +463,7 @@ export const createSessionStore = (): SessionStore => {
 		delete: (chatId) => sessions.delete(chatId),
 		getResumeToken: (chatId, cli) => resumeTokens.get(`${chatId}:${cli}`),
 		setResumeToken: (chatId, cli, token) => resumeTokens.set(`${chatId}:${cli}`, token),
+		clearResumeToken: (chatId, cli) => resumeTokens.delete(`${chatId}:${cli}`),
 		getActiveCli: (chatId) => activeCli.get(chatId),
 		setActiveCli: (chatId, cli) => activeCli.set(chatId, cli),
 		// Only main sessions (not subagents) block the chat

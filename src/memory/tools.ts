@@ -167,10 +167,11 @@ export const formatMemoryToolResultPrompt = (
 export const buildMemoryToolInstructions = (): string =>
 	[
 		'Memory tools available:',
-		'Policy (enforced):',
-		'- If the user asks you to recall prior chats, prior messages, or workspace facts you are not 100% sure about, you MUST use memory_search and/or memory_get before answering.',
-		'- Do not guess. If recall is needed, your next reply must be a single JSON tool call (no extra text).',
-		'Use ONE of the following as your entire reply when you need memory.',
+		'Recall guidance:',
+		'- Before answering about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md.',
+		'- Use memory_get to pull only the needed lines from the best file.',
+		'- If you are still unsure after searching, say you checked and explain uncertainty.',
+		'Use ONE of the following as your entire reply when you need memory:',
 		'{"tool":"memory_search","query":"<query>","maxResults":6,"minScore":0.35}',
 		'{"tool":"memory_get","path":"memory/file.md","from":1,"lines":20}',
 	].join('\n')

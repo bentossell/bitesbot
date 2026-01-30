@@ -28,7 +28,16 @@ loadEnvFile(resolve(process.cwd(), '.env.e2e'))
 export default defineConfig({
 	test: {
 		include: ['tests/**/*.e2e.ts'],
-		testTimeout: 120_000,
-		hookTimeout: 120_000,
+		testTimeout: 60_000,
+		hookTimeout: 60_000,
+		sequence: {
+			concurrent: false,
+		},
+		poolOptions: {
+			threads: {
+				minThreads: 1,
+				maxThreads: 1,
+			},
+		},
 	},
 })
