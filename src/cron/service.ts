@@ -73,12 +73,12 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 				missedJobIds.push(job.id)
 			}
 
-			// Calculate next run if not set
-			if (!job.nextRunAtMs) {
-				const nextRun = calculateNextRun(job.schedule, now)
-				if (nextRun) {
-					this.store = updateJob(this.store, job.id, { nextRunAtMs: nextRun })
-				}
+			// Always recalculate next run from cron expression on restart
+			// This ensures we don't miss runs due to stale/incorrect nextRunAtMs values
+			const nextRun = calculateNextRun(job.schedule, now)
+			if (nextRun && nextRun !== job.nextRunAtMs) {
+				console.log(`[cron] Recalculated next run for "${job.name}": ${new Date(nextRun).toISOString()}`)
+				this.store = updateJob(this.store, job.id, { nextRunAtMs: nextRun })
 			}
 		}
 		await this.save()
