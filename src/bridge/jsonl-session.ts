@@ -471,7 +471,12 @@ export type QueuedMessage = {
 	text: string
 	attachments?: Array<{ localPath?: string }>
 	createdAt: number
-	context?: { source?: 'user' | 'cron' | 'memory-tool'; cronJobId?: string; memoryToolDepth?: number }
+	context?: {
+		source?: 'user' | 'cron' | 'memory-tool'
+		cronJobId?: string
+		memoryToolDepth?: number
+		isPrivateChat?: boolean
+	}
 }
 
 export type SessionStore = {

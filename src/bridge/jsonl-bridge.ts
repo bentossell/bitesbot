@@ -9,6 +9,7 @@ import {
 } from './jsonl-session.js'
 import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
 import { syncSessionToMemory } from './memory-sync.js'
+import { maybeAutoFlushSessionToMemory } from './auto-memory-flush.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
 import type { CronJob } from '../cron/types.js'
 import { logToFile } from '../logging/file.js'
@@ -37,6 +38,7 @@ import { buildMemoryRecall } from '../memory/recall.js'
 import type { MemoryConfig } from '../memory/types.js'
 import {
 	buildMemoryToolInstructions,
+	buildRecallEnforcementHint,
 	formatMemoryToolResultPrompt,
 	parseMemoryToolCall,
 	runMemoryTool,
@@ -53,6 +55,7 @@ import {
 	saveConceptConfig,
 } from '../workspace/concepts.js'
 import { getRelativePath } from '../workspace/path-utils.js'
+import { buildBootContext } from '../workspace/boot-context.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -99,24 +102,44 @@ const parseSlashCommand = (text: string): { command: string; rest: string } | nu
 	return { command, rest: match[2]?.trim() ?? '' }
 }
 
-const resolveModelForCli = (cli: string, model?: string): string | undefined => {
+const MODEL_ALIASES: Record<string, string> = {
+	// Claude models
+	opus: 'claude-opus-4-5-20251101',
+	sonnet: 'claude-sonnet-4-5-20250929',
+	haiku: 'claude-haiku-4-5-20251001',
+	// OpenAI Codex models
+	codex: 'gpt-5.2',
+	'codex-max': 'gpt-5.1-codex-max',
+	// Gemini
+	gemini: 'gemini-3-pro-preview',
+	'gemini-flash': 'gemini-3-flash-preview',
+}
+
+const resolveModelAlias = (model?: string): string | undefined => {
 	if (!model) return undefined
 	const normalized = model.toLowerCase()
+	return MODEL_ALIASES[normalized] ?? model
+}
+
+const resolveModelForCli = (cli: string, model?: string): string | undefined => {
+	const resolved = resolveModelAlias(model)
+	if (!resolved) return undefined
+	const normalized = resolved.toLowerCase()
 
 	if (cli === 'codex') {
 		if (normalized.includes('claude') || normalized.includes('gemini')) return undefined
-		return model
+		return resolved
 	}
 
 	if (cli === 'claude' || cli === 'droid') {
-		return normalized.includes('claude') ? model : undefined
+		return normalized.includes('claude') ? resolved : undefined
 	}
 
 	if (cli.startsWith('gemini')) {
-		return normalized.includes('gemini') ? model : undefined
+		return normalized.includes('gemini') ? resolved : undefined
 	}
 
-	return model
+	return resolved
 }
 
 const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> => {
@@ -138,26 +161,46 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: `Switched to ${cli}.` }
 	}
 
+	// /models command - list model aliases
+	if (trimmed === '/models') {
+		const current = persistentStore?.getChatSettings(chatId).model ?? 'default'
+		const lines = [
+			`Current model: ${current}`,
+			'Aliases:',
+			...Object.entries(MODEL_ALIASES).map(([alias, id]) => `- ${alias}: ${id}`),
+		]
+		return { handled: true, response: lines.join('\n') }
+	}
+
+	if (trimmed === '/help') {
+		const lines = [
+			'Available Commands:',
+			'/use <cli> - switch adapter',
+			'/new - start a fresh session',
+			'/status - show session status',
+			'/model <alias|id> - set model for next session',
+			'/models - list available model aliases',
+			'/stream on|off - toggle streaming responses',
+			'/verbose on|off - toggle tool output',
+			'/spawn <task> - run a subagent task',
+			'/subagents - list subagent runs',
+			'/cron <expr> <message> - schedule a cron job',
+			'/crons - list cron jobs',
+			'/remind <time> <message> - schedule a reminder',
+			'/stop - terminate the current session',
+			'/interrupt - stop current task and continue queue',
+			'/restart - restart the gateway',
+		]
+		return { handled: true, response: lines.join('\n') }
+	}
+
 	// /model command - switch AI model (with aliases)
 	if (trimmed.startsWith('/model')) {
 		const arg = trimmed.slice(6).trim().toLowerCase()
 		if (!arg) {
 			return { handled: true, response: 'Usage: /model <alias>\nAliases: opus, sonnet, haiku, codex\nFull IDs also supported (e.g., claude-opus-4-5-20251101)' }
 		}
-		// Model alias mappings (based on CLI docs)
-		const modelAliases: Record<string, string> = {
-			// Claude models
-			opus: 'claude-opus-4-5-20251101',
-			sonnet: 'claude-sonnet-4-5-20250929',
-			haiku: 'claude-haiku-4-5-20251001',
-			// OpenAI Codex models
-			codex: 'gpt-5.2',
-			'codex-max': 'gpt-5.1-codex-max',
-			// Gemini
-			gemini: 'gemini-3-pro-preview',
-			'gemini-flash': 'gemini-3-flash-preview',
-		}
-		const modelId = modelAliases[arg] || arg
+		const modelId = resolveModelAlias(arg) ?? arg
 		// Store model preference (will be passed to CLI on next session)
 		// Note: setChatSettings merges with existing settings, so this won't clobber streaming/verbose
 		if (persistentStore) {
@@ -167,6 +210,9 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 	}
 
 	if (trimmed === '/new') {
+		const session = sessionStore.get(chatId)
+		const currentCli = sessionStore.getActiveCli(chatId) || session?.cli || defaultCli
+
 		// Sync session to memory before clearing
 		try {
 			const result = await syncSessionToMemory(workingDirectory)
@@ -177,7 +223,11 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 			console.error('[jsonl-bridge] Failed to sync memory on /new:', err)
 		}
 		
-		const session = sessionStore.get(chatId)
+		sessionStore.clearResumeToken(chatId, currentCli)
+		if (persistentStore) {
+			await persistentStore.clearResumeToken(chatId, currentCli)
+		}
+		
 		if (session) {
 			session.terminate()
 			sessionStore.delete(chatId)
@@ -531,12 +581,12 @@ const sendToGateway = async (
 				status: response.status,
 				chatId,
 				body: body.slice(0, 1000),
-			})
+			}).catch(() => {})
 		}
 	} catch (err) {
 		console.error(`[jsonl-bridge] Failed to send message:`, err)
 		const message = err instanceof Error ? err.message : 'unknown error'
-		void logToFile('error', 'bridge send failed', { error: message, chatId })
+		void logToFile('error', 'bridge send failed', { error: message, chatId }).catch(() => {})
 	}
 }
 
@@ -588,14 +638,14 @@ const sendFileToGateway = async (
 				chatId,
 				filePath,
 				body: body.slice(0, 1000),
-			})
+			}).catch(() => {})
 			return false
 		}
 		return true
 	} catch (err) {
 		console.error(`[jsonl-bridge] Failed to send file:`, err)
 		const message = err instanceof Error ? err.message : 'unknown error'
-		void logToFile('error', 'bridge send file failed', { error: message, chatId, filePath })
+		void logToFile('error', 'bridge send file failed', { error: message, chatId, filePath }).catch(() => {})
 		return false
 	}
 }
@@ -628,6 +678,19 @@ const SUBAGENT_SPAWN_INSTRUCTIONS = [
 	'Do not include any other text before or after /spawn.',
 ].join('\n')
 
+const isRecallQuestion = (text: string): boolean => {
+	const t = text.trim().toLowerCase()
+	if (!t) return false
+	// User asking about prior convo / personal/workspace state should trigger enforced recall.
+	return (
+		/(what|when|where|who)\s+did\s+(i|we)\s+(say|decide|agree|do)/.test(t) ||
+		/\b(remind me|remember|as i said|last time|previously|earlier)\b/.test(t) ||
+		/\b(my (todo|goals?|plans?|notes?|setup)|your (notes?|memory))\b/.test(t) ||
+		t.includes('in our last') ||
+		t.includes('in our previous')
+	)
+}
+
 const isSpawnDirectiveCandidate = (text: string): boolean =>
 	text.trimStart().startsWith('/spawn')
 
@@ -659,6 +722,7 @@ type SpawnSubagentOptions = {
 	defaultCli: string
 	subagentFallbackCli?: string
 	workingDirectory: string
+	memory?: MemoryConfig
 	model?: string
 	send: (chatId: number | string, text: string) => Promise<void>
 	logMessage?: (
@@ -815,7 +879,18 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 			})
 
 			// Run the subagent (no resume token - fresh session)
-			session.run(task, undefined, { model: resolveModelForCli(cliName, opts.model) })
+			const run = async () => {
+				let prompt = task
+				// Deterministic boot context for fresh subagents
+				try {
+					const boot = await buildBootContext(workingDirectory, { mode: 'subagent' })
+					if (boot) prompt = `${boot}\n\n${prompt}`
+				} catch {
+					// ignore
+				}
+				session.run(prompt, undefined, { model: resolveModelForCli(cliName, opts.model) })
+			}
+			void run()
 		})
 	})
 
@@ -908,16 +983,33 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		source?: 'user' | 'cron' | 'memory-tool'
 		cronJobId?: string
 		memoryToolDepth?: number
+		isPrivateChat?: boolean
 	}
 
 	const processMessage = async (chatId: number | string, prompt: string, context?: MessageContext) => {
 		const t0 = Date.now()
 		const originalPrompt = prompt
+		const isMainSession = context?.isPrivateChat === true
 		let cronMarked = false
 
 		// Use active CLI for this chat, or default (check persistent store first)
 		const cliName = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
 		
+		// Get existing resume token for this specific CLI
+		const resumeToken = sessionStore.getResumeToken(chatId, cliName)
+
+		// Deterministic boot context for fresh sessions (after restart or /new)
+		if (!resumeToken && isMainSession) {
+			try {
+				const boot = await buildBootContext(config.workingDirectory, { mode: 'main' })
+				if (boot) {
+					prompt = `${boot}\n\n${prompt}`
+				}
+			} catch {
+				// ignore boot context failures
+			}
+		}
+
 		// Inject any pending subagent results into the prompt
 		const pendingResults = formatPendingResultsForInjection(chatId)
 		if (pendingResults) {
@@ -925,7 +1017,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			console.log(`[jsonl-bridge] Injected subagent results into prompt`)
 		}
 
-		if (config.memory?.enabled) {
+		const recallRequired =
+			config.memory?.enabled === true &&
+			isMainSession &&
+			context?.source !== 'memory-tool' &&
+			isRecallQuestion(originalPrompt)
+		if (config.memory?.enabled && isMainSession) {
 			try {
 				const memoryRecall = await buildMemoryRecall(originalPrompt, config.memory)
 				if (memoryRecall) {
@@ -939,6 +1036,11 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				const message = err instanceof Error ? err.message : 'unknown error'
 				console.error('[jsonl-bridge] Failed to build memory recall:', message)
 			}
+		}
+
+		// Enforce tool-based recall for recall questions (forces a tool call loop)
+		if (recallRequired) {
+			prompt = `${buildRecallEnforcementHint()}\n\n${prompt}`
 		}
 
 		if (!context?.source) {
@@ -959,9 +1061,6 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			await send(chatId, `CLI '${cliName}' not found. Check adapters directory.`)
 			return
 		}
-
-		// Get existing resume token for this specific CLI
-		const resumeToken = sessionStore.getResumeToken(chatId, cliName)
 
 		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Starting ${cliName} session for ${chatId}${resumeToken ? ' (resuming)' : ''}`)
 
@@ -1152,6 +1251,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 								defaultCli: config.defaultCli,
 								subagentFallbackCli: config.subagentFallbackCli,
 								workingDirectory: config.workingDirectory,
+								memory: config.memory,
 								model: settings.model,
 								send,
 								logMessage: persistentStore.logMessage,
@@ -1196,6 +1296,14 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 							}
 
 							void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
+						// Post-turn durable flush (best-effort)
+						try {
+							if (config.memory?.enabled && isMainSession) {
+								void maybeAutoFlushSessionToMemory(config.workingDirectory)
+							}
+						} catch {
+							// ignore
+						}
 						
 						// Extract and send any file attachments from the response (for non-streaming case)
 						const { files, remainingText } = extractSendfileCommands(evt.answer)
@@ -1292,7 +1400,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		if (!text && !attachments?.length) return
 		const raw = typeof message.raw === 'object' && message.raw ? (message.raw as Record<string, unknown>) : undefined
 		const cronJobId = raw?.cron === true && typeof raw.jobId === 'string' ? raw.jobId : undefined
-		const context: MessageContext | undefined = cronJobId ? { source: 'cron', cronJobId } : undefined
+		const chat = typeof raw?.chat === 'object' && raw.chat ? (raw.chat as Record<string, unknown>) : undefined
+		const chatType = typeof chat?.type === 'string' ? chat.type : undefined
+		const isPrivateChat = chatType === 'private'
+		const context: MessageContext | undefined = cronJobId
+			? { source: 'cron', cronJobId, isPrivateChat }
+			: { isPrivateChat }
 		if (!context?.cronJobId) {
 			void triggerHeartbeat()
 		}
@@ -1378,6 +1491,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						defaultCli: config.defaultCli,
 						subagentFallbackCli: config.subagentFallbackCli,
 						workingDirectory: config.workingDirectory,
+						memory: config.memory,
 						model: settings.model,
 						send,
 						logMessage: persistentStore.logMessage,
@@ -1417,6 +1531,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				defaultCli: config.defaultCli,
 				subagentFallbackCli: config.subagentFallbackCli,
 				workingDirectory: config.workingDirectory,
+				memory: config.memory,
 				model: settings.model,
 				send,
 				logMessage: persistentStore.logMessage,

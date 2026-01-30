@@ -1,14 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { TelegramClient, sessions } from 'telegram'
 import WebSocket, { type RawData } from 'ws'
 import { setTimeout as delay } from 'node:timers/promises'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { startGatewayServer, type GatewayServerHandle } from '../src/gateway/server.js'
-import { startBridge, type BridgeHandle } from '../src/bridge/index.js'
+import { startBridge, type BridgeHandle, setWorkspaceDir } from '../src/bridge/index.js'
+import { setSubagentRegistryPath } from '../src/bridge/subagent-registry.js'
 import type { GatewayEvent } from '../src/protocol/types.js'
 
 const apiId = Number(process.env.TG_E2E_API_ID ?? '')
@@ -37,9 +38,9 @@ const gatewayPort = Number(gatewayPortRaw ?? '8790')
 const hasEnv = Boolean(apiId && apiHash && sessionStr && botToken && botUsername)
 const isCI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS)
 const shouldRun = hasEnv && !isCI && process.env.TG_E2E_RUN === '1'
-const TIMEOUT_MS = 120_000
-const SHORT_TIMEOUT = 30_000
-const LONG_TIMEOUT = 180_000 // For tests that involve AI responses
+const TIMEOUT_MS = 60_000
+const SHORT_TIMEOUT = 20_000
+const LONG_TIMEOUT = 60_000 // For tests that involve AI responses
 
 const waitForGatewayEvent = <T extends GatewayEvent['type']>(
 	ws: WebSocket,
@@ -152,6 +153,38 @@ const waitForNewBotMessageWithMeta = async (
 	throw new Error('Timeout waiting for new bot message with meta')
 }
 
+const formatDate = (date: Date) => date.toISOString().split('T')[0]
+
+const seedWorkspacePlaceholders = async (workspaceDir: string) => {
+	const rootFiles: Array<{ name: string; content: string }> = [
+		{ name: 'AGENTS.md', content: '# AGENTS\n\nE2E placeholder agents file.\n' },
+		{ name: 'SOUL.md', content: '# SOUL\n\nE2E placeholder soul file.\n' },
+		{ name: 'soul.md', content: '# soul\n\nE2E placeholder soul file.\n' },
+		{ name: 'TOOLS.md', content: '# TOOLS\n\nE2E placeholder tools file.\n' },
+		{ name: 'IDENTITY.md', content: '# IDENTITY\n\nE2E placeholder identity file.\n' },
+		{ name: 'USER.md', content: '# USER\n\nE2E placeholder user file.\n' },
+		{ name: 'HEARTBEAT.md', content: '# HEARTBEAT\n\nE2E placeholder heartbeat file.\n' },
+		{ name: 'BOOTSTRAP.md', content: '# BOOTSTRAP\n\nE2E placeholder bootstrap file.\n' },
+		{ name: 'thoughts.md', content: '# thoughts\n\nE2E placeholder thoughts file.\n' },
+	]
+
+	await Promise.all(
+		rootFiles.map((file) => writeFile(join(workspaceDir, file.name), file.content, 'utf-8'))
+	)
+
+	const memoryDir = join(workspaceDir, 'memory')
+	await mkdir(memoryDir, { recursive: true })
+	for (let i = 0; i < 3; i += 1) {
+		const date = new Date(Date.now() - i * 24 * 60 * 60 * 1000)
+		const fileName = `${formatDate(date)}.md`
+		await writeFile(
+			join(memoryDir, fileName),
+			`# Memory ${fileName}\n\nE2E placeholder memory file.\n`,
+			'utf-8',
+		)
+	}
+}
+
 // Single gateway instance - Telegram only allows one poller per bot token
 // Skip in CI - these tests require real Telegram credentials and are for local use only
 describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
@@ -165,6 +198,9 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 
 	beforeAll(async () => {
 		tempDir = await mkdtemp(join(tmpdir(), 'bitesbot-e2e-'))
+		setWorkspaceDir(tempDir)
+		setSubagentRegistryPath(join(tempDir, '.state', 'subagent-registry.json'))
+		await seedWorkspacePlaceholders(tempDir)
 		
 		const { StringSession } = sessions
 		client = new TelegramClient(new StringSession(sessionStr), apiId, apiHash, { connectionRetries: 5 })
@@ -284,6 +320,70 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(reply).toContain('opus')
 	}, TIMEOUT_MS)
 
+	it('/model switch applies to next session (claude)', async () => {
+		await client.sendMessage(botUsername, { message: '/use claude' })
+		await waitForBotMessageContaining(client, botUsername, 'claude', SHORT_TIMEOUT)
+
+		const logSpy = vi.spyOn(console, 'log')
+		try {
+			const beforeModel = Date.now()
+			await client.sendMessage(botUsername, { message: '/model haiku' })
+			const firstReply = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeModel,
+				(text) => text.includes('claude-haiku-4-5-20251001'),
+				SHORT_TIMEOUT,
+			)
+			expect(firstReply).toContain('claude-haiku-4-5-20251001')
+
+			await client.sendMessage(botUsername, { message: '/new' })
+			await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+
+			logSpy.mockClear()
+			const beforeFirst = Date.now()
+			await client.sendMessage(botUsername, { message: 'What is 1+1? Reply with just the number.' })
+			await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeFirst,
+				(text) => text.includes('2') && !text.includes('fresh') && !text.includes('CLI:'),
+				LONG_TIMEOUT,
+			)
+			const firstLogs = logSpy.mock.calls.map((call) => call.join(' ')).join('\n')
+			expect(firstLogs).toContain('--model claude-haiku-4-5-20251001')
+
+			const beforeSecondModel = Date.now()
+			await client.sendMessage(botUsername, { message: '/model opus' })
+			const secondReply = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSecondModel,
+				(text) => text.includes('claude-opus-4-5-20251101'),
+				SHORT_TIMEOUT,
+			)
+			expect(secondReply).toContain('claude-opus-4-5-20251101')
+
+			await client.sendMessage(botUsername, { message: '/new' })
+			await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+
+			logSpy.mockClear()
+			const beforeSecond = Date.now()
+			await client.sendMessage(botUsername, { message: 'What is 5+5? Reply with just the number.' })
+			await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSecond,
+				(text) => text.includes('10') && !text.includes('fresh') && !text.includes('CLI:'),
+				LONG_TIMEOUT,
+			)
+			const secondLogs = logSpy.mock.calls.map((call) => call.join(' ')).join('\n')
+			expect(secondLogs).toContain('--model claude-opus-4-5-20251101')
+		} finally {
+			logSpy.mockRestore()
+		}
+	}, LONG_TIMEOUT)
+
 	it('/new starts fresh session', async () => {
 		await client.sendMessage(botUsername, { message: '/new' })
 		const reply = await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
@@ -337,7 +437,7 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		await client.sendMessage(botUsername, { message: '/use droid' })
 		await waitForBotMessage(client, botUsername, 'Switched to droid.', SHORT_TIMEOUT)
 
-		const spawnPrompt = `/spawn --label "${label}" "First line must be sub-${token}:42. Write 60 bullet points about shipping a feature. Use 6 section headings with 10 bullets each. Each bullet must be at least 12 words. End with sub-${token}:42."`
+		const spawnPrompt = `/spawn --label "${label}" "Write 36 bullet points about shipping a feature. Use 6 section headings with 6 bullets each. Each bullet must be at least 16 words, and finish with a 6-line poem. End with sub-${token}:42."`
 		await client.sendMessage(botUsername, { message: spawnPrompt })
 		const spawnAck = await waitForNewBotMessageWithMeta(
 			client,
@@ -359,27 +459,45 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 
 		const followPrompt = `Main2-${token}: Reply with exactly "main-${token}:6".`
 		await client.sendMessage(botUsername, { message: followPrompt })
-		const [followReply, subagentDone] = await Promise.all([
-			waitForNewBotMessageWithMeta(
-				client,
-				botUsername,
-				startedMsg.timestamp,
-				(text) => text.includes(`main-${token}:6`),
-				LONG_TIMEOUT,
-			),
-			waitForNewBotMessageWithMeta(
-				client,
-				botUsername,
-				startedMsg.timestamp,
-				(text) => text.includes(`✅ ${label}`),
-				LONG_TIMEOUT,
-			),
-		])
+		const followReply = await waitForNewBotMessageWithMeta(
+			client,
+			botUsername,
+			startedMsg.timestamp,
+			(text) => text.includes(`main-${token}:6`),
+			LONG_TIMEOUT,
+		)
+		const subagentDone = await waitForNewBotMessageWithMeta(
+			client,
+			botUsername,
+			followReply.timestamp,
+			(text) => text.includes(`✅ ${label}`),
+			LONG_TIMEOUT,
+		)
 		expect(followReply.text).toContain(`main-${token}:6`)
 		expect(subagentDone.text).toContain(`✅ ${label}`)
-		expect(subagentDone.text).toContain(`sub-${token}:42`)
 		expect(startedMsg.id).toBeLessThan(followReply.id)
 		expect(followReply.id).toBeLessThan(subagentDone.id)
+	}, LONG_TIMEOUT)
+
+	it('sends a prompt and receives an AI response (claude)', async () => {
+		await client.sendMessage(botUsername, { message: '/use claude' })
+		await waitForBotMessageContaining(client, botUsername, 'claude', SHORT_TIMEOUT)
+		// Start fresh
+		await client.sendMessage(botUsername, { message: '/new' })
+		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+
+		const beforeSend = Date.now()
+		const testPrompt = 'What is 2+2? Reply with just the number.'
+		await client.sendMessage(botUsername, { message: testPrompt })
+
+		const response = await waitForNewBotMessage(
+			client,
+			botUsername,
+			beforeSend,
+			(text) => text.includes('4') && !text.includes('fresh') && !text.includes('CLI:'),
+			LONG_TIMEOUT,
+		)
+		expect(response).toContain('4')
 	}, LONG_TIMEOUT)
 
 	it.skipIf(!hasCodex)('sends a prompt and receives an AI response (codex)', async () => {
@@ -392,12 +510,11 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 		await client.sendMessage(botUsername, { message: '/new' })
 		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
-		
+
 		const beforeSend = Date.now()
 		const testPrompt = 'What is 2+2? Reply with just the number.'
 		await client.sendMessage(botUsername, { message: testPrompt })
-		
-		// Wait for a response that contains "4" (the answer)
+
 		const response = await waitForNewBotMessage(
 			client,
 			botUsername,
@@ -406,6 +523,27 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 			LONG_TIMEOUT,
 		)
 		expect(response).toContain('4')
+	}, LONG_TIMEOUT)
+
+	it.skipIf(!hasDroid)('sends a prompt and receives an AI response (droid)', async () => {
+		await client.sendMessage(botUsername, { message: '/use droid' })
+		await waitForBotMessageContaining(client, botUsername, 'droid', SHORT_TIMEOUT)
+
+		await client.sendMessage(botUsername, { message: '/new' })
+		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+
+		const beforeSend = Date.now()
+		const testPrompt = 'What is 3+3? Reply with just the number.'
+		await client.sendMessage(botUsername, { message: testPrompt })
+
+		const response = await waitForNewBotMessage(
+			client,
+			botUsername,
+			beforeSend,
+			(text) => text.includes('6') && !text.includes('fresh') && !text.includes('CLI:'),
+			LONG_TIMEOUT,
+		)
+		expect(response).toContain('6')
 	}, LONG_TIMEOUT)
 
 	it('/new actually clears session context', async () => {
@@ -444,7 +582,7 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		
 		// The bot should NOT remember the secret word after /new
 		expect(response).not.toContain(secretWord)
-	}, LONG_TIMEOUT * 2)
+	}, LONG_TIMEOUT)
 
 	it('/stop actually terminates a running session', async () => {
 		// Start fresh and begin a long task

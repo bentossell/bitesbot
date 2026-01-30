@@ -167,7 +167,20 @@ export const formatMemoryToolResultPrompt = (
 export const buildMemoryToolInstructions = (): string =>
 	[
 		'Memory tools available:',
-		'Use ONE of the following as your entire reply when you need memory.',
+		'Recall guidance:',
+		'- Before answering about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md.',
+		'- Use memory_get to pull only the needed lines from the best file.',
+		'- If you are still unsure after searching, say you checked and explain uncertainty.',
+		'Use ONE of the following as your entire reply when you need memory:',
 		'{"tool":"memory_search","query":"<query>","maxResults":6,"minScore":0.35}',
 		'{"tool":"memory_get","path":"memory/file.md","from":1,"lines":20}',
+	].join('\n')
+
+export const buildRecallEnforcementHint = (): string =>
+	[
+		'RECALL REQUIRED:',
+		'This question requires checking durable memory. Your next reply MUST be exactly one memory tool JSON call:',
+		'- Start with memory_search using a precise query.',
+		'- If you find a relevant file, follow with memory_get on the best path and line range.',
+		'No other text, no analysis, no answer until memory is checked.',
 	].join('\n')

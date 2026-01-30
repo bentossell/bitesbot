@@ -101,6 +101,10 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 - Web UI (#20) — secondary surface, not core focus
 - Desktop app wizard (#8) — nice-to-have for onboarding
 
+### Open Questions
+
+- Should `/new` accept a trailing prompt (e.g. "/new, what were we just talking about?") and allow the assistant to recall the just-finished session only on request?
+
 ## Launch Goals (Open Source Release)
 
 This will be an open source project anyone can self-host. Before launch, we need:

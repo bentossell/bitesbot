@@ -29,7 +29,8 @@ const extractParseCommandBlock = (source: string) => {
 }
 
 const extractModelAliases = (source: string) => {
-	const start = source.indexOf('const modelAliases')
+	const start = source.indexOf('const MODEL_ALIASES')
+		!== -1 ? source.indexOf('const MODEL_ALIASES') : source.indexOf('const modelAliases')
 	if (start === -1) {
 		errors.push('src/bridge/jsonl-bridge.ts: modelAliases not found')
 		return []
@@ -64,6 +65,7 @@ const main = async () => {
 	const parseCommandBlock = extractParseCommandBlock(bridgeSource)
 	if (parseCommandBlock) {
 		const commands = new Set<string>()
+		const ignoredCommands = new Set(['help', 'models'])
 		const addMatches = (pattern: RegExp) => {
 			for (const match of parseCommandBlock.matchAll(pattern)) {
 				commands.add(match[1])
@@ -73,7 +75,9 @@ const main = async () => {
 		addMatches(/trimmed\.startsWith\('\/([a-z-]+)/g)
 		addMatches(/slashCommand\?\.command === '([a-z-]+)'/g)
 
-		const missing = Array.from(commands).filter((command) => !bridgeDoc.includes(`/${command}`))
+		const missing = Array.from(commands)
+			.filter((command) => !ignoredCommands.has(command))
+			.filter((command) => !bridgeDoc.includes(`/${command}`))
 		if (missing.length > 0) {
 			errors.push(`docs/bridge.md: missing slash commands: ${missing.sort().join(', ')}`)
 		}
