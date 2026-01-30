@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { statSync } from 'node:fs'
 import type { MemoryConfig } from '../memory/types.js'
+import type { WorkspaceConfig } from '../workspace/registry.js'
 
 export type BridgeConfig = {
 	enabled: boolean
@@ -11,6 +12,7 @@ export type BridgeConfig = {
 	workingDirectory: string
 	adaptersDir: string
 	memory?: MemoryConfig
+	workspaces?: WorkspaceConfig
 }
 
 export type GatewayConfig = {
