@@ -169,6 +169,8 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 			sessionTarget: input.sessionTarget,
 			model: input.model,
 			thinking: input.thinking,
+			isReminder: input.isReminder,
+			delivery: input.delivery,
 		}
 		this.store = addJob(this.store, job)
 		await this.save()
@@ -259,7 +261,30 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 				const next = j.nextRunAtMs ? new Date(j.nextRunAtMs).toLocaleString() : 'n/a'
 				const isolated = j.sessionTarget === 'isolated' ? ' [isolated]' : ''
 				const model = j.model ? ` [${j.model}]` : ''
-				return `${status} ${j.id}: ${j.name}${isolated}${model}\n   ${formatSchedule(j.schedule)} | next: ${next}`
+				const reminder = j.isReminder ? ' 🔔' : ''
+				return `${status} ${j.id}: ${j.name}${reminder}${isolated}${model}\n   ${formatSchedule(j.schedule)} | next: ${next}`
+			})
+			.join('\n\n')
+	}
+
+	/**
+	 * List only reminder jobs
+	 */
+	async listReminders(): Promise<CronJob[]> {
+		return this.store.jobs.filter((j) => j.isReminder)
+	}
+
+	/**
+	 * Format reminder list for display
+	 */
+	formatReminderList(reminders: CronJob[]): string {
+		if (reminders.length === 0) return 'No reminders set.'
+		return reminders
+			.map((r) => {
+				const status = r.enabled ? '🔔' : '🔕'
+				const next = r.nextRunAtMs ? new Date(r.nextRunAtMs).toLocaleString() : 'n/a'
+				const delivery = r.delivery && r.delivery !== 'telegram' ? ` [${r.delivery}]` : ''
+				return `${status} ${r.id}: ${r.name}${delivery}\n   ${formatSchedule(r.schedule)} | next: ${next}`
 			})
 			.join('\n\n')
 	}
