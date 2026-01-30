@@ -19,8 +19,8 @@ import { TelegramClient, sessions } from 'telegram'
 import WebSocket from 'ws'
 import { setTimeout as delay } from 'node:timers/promises'
 import { spawnSync } from 'node:child_process'
-import { join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { existsSync, readdirSync } from 'node:fs'
 import { mkdtemp, rm, writeFile, readFile, mkdir, readdir } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { startGatewayServer, type GatewayServerHandle } from '../src/gateway/server.js'
@@ -42,10 +42,34 @@ const gatewayPortRaw = process.env.TG_E2E_GATEWAY_PORT
 const botUsername = botUsernameRaw
 	? botUsernameRaw.startsWith('@') ? botUsernameRaw : `@${botUsernameRaw}`
 	: ''
-const gatewayPort = Number(gatewayPortRaw ?? '8791') // Different port from main e2e tests
+const basePort = Number(gatewayPortRaw ?? '8790')
+const gatewayPort = Number.isNaN(basePort) ? 8791 : basePort + 1 // Different port from main e2e tests
 const hasEnv = Boolean(apiId && apiHash && sessionStr && botToken && botUsername)
 const isCI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS)
 const shouldRun = hasEnv && !isCI && process.env.TG_E2E_RUN === '1'
+
+const resolvePiPath = (): string | null => {
+	try {
+		const result = spawnSync('which', ['pi'])
+		if (result.status === 0) return result.stdout.toString().trim()
+	} catch {
+		// ignore
+	}
+	const nvmDir = join(homedir(), '.nvm', 'versions', 'node')
+	if (!existsSync(nvmDir)) return null
+	for (const version of readdirSync(nvmDir)) {
+		const candidate = join(nvmDir, version, 'bin', 'pi')
+		if (existsSync(candidate)) return candidate
+	}
+	return null
+}
+const piPath = resolvePiPath()
+if (piPath) {
+	const piDir = dirname(piPath)
+	if (!process.env.PATH?.includes(piDir)) {
+		process.env.PATH = `${piDir}:${process.env.PATH ?? ''}`
+	}
+}
 
 // Timeout constants
 const SHORT_TIMEOUT = 30_000
@@ -407,9 +431,9 @@ const ADAPTERS: AdapterInfo[] = [
 	// pi adapter is placeholder - typically requires special setup
 	{
 		name: 'pi',
-		available: false, // Not available by default
-		modelAliases: [],
-		supportsToolUse: false,
+		available: checkCliAvailable('pi'),
+		modelAliases: ['opus', 'sonnet', 'haiku'],
+		supportsToolUse: true,
 	},
 ]
 
@@ -549,7 +573,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	}, LONG_TIMEOUT)
 
 	afterAll(async () => {
-		if (ws?.readyState !== WebSocket.CLOSED) {
+		if (ws && ws.readyState !== WebSocket.CLOSED) {
 			await new Promise<void>((resolve) => {
 				ws.once('close', () => resolve())
 				ws.close()

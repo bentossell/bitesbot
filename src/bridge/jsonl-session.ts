@@ -36,13 +36,35 @@ export type CodexEvent =
 	| { type: 'item.completed'; item: { id: string; type: string; text?: string } }
 	| { type: 'turn.completed'; usage?: { input_tokens?: number; output_tokens?: number } }
 
+export type PiMessage = {
+	role?: string
+	content?: Array<{ type?: string; text?: string }>
+}
+
+export type PiAssistantMessageEvent =
+	| { type: 'text_delta'; delta: string }
+	| { type: string; [key: string]: unknown }
+
+export type PiEvent =
+	| { type: 'session'; id: string; version?: number; timestamp?: string; cwd?: string }
+	| { type: 'agent_start' }
+	| { type: 'agent_end'; messages?: PiMessage[] }
+	| { type: 'turn_start' }
+	| { type: 'turn_end'; message: PiMessage; toolResults?: unknown[] }
+	| { type: 'message_start'; message: PiMessage }
+	| { type: 'message_update'; message: PiMessage; assistantMessageEvent?: PiAssistantMessageEvent }
+	| { type: 'message_end'; message: PiMessage }
+	| { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: Record<string, unknown> }
+	| { type: 'tool_execution_update'; toolCallId: string; toolName: string; args: Record<string, unknown>; partialResult?: unknown }
+	| { type: 'tool_execution_end'; toolCallId: string; toolName: string; result?: unknown; isError: boolean }
+
 export type ContentBlock =
 	| { type: 'text'; text: string }
 	| { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
 	| { type: 'tool_result'; tool_use_id: string; content?: string | unknown[]; is_error?: boolean }
 	| { type: 'thinking'; thinking: string }
 
-type JsonlEvent = ClaudeEvent | DroidEvent | CodexEvent
+type JsonlEvent = ClaudeEvent | DroidEvent | CodexEvent | PiEvent
 
 export type BridgeEvent =
 	| { type: 'started'; sessionId: string; model?: string }
@@ -176,6 +198,13 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				args.push(resume.sessionId)
 			}
 			args.push(prompt)
+		} else if (this.cli === 'pi') {
+			// Pi uses: pi --mode json "prompt"
+			args = [...this.manifest.args]
+			appendResumeArgs(args)
+			appendWorkingDirArgs(args)
+			appendModelArgs(args)
+			args.push(prompt)
 		} else {
 			// Claude uses: claude -p --output-format stream-json --verbose "prompt"
 			args = [
@@ -235,7 +264,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		if (!line.trim()) return
 
 		try {
-			const event = JSON.parse(line) as ClaudeEvent
+			const event = JSON.parse(line) as JsonlEvent
 			this.translateEvent(event)
 		} catch {
 			console.log(`[jsonl-session] Non-JSON line: ${line.slice(0, 100)}`)
@@ -243,6 +272,15 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	}
 
 	private translateEvent(event: JsonlEvent): void {
+		const extractPiText = (message?: PiMessage): string | undefined => {
+			if (!message?.content || !Array.isArray(message.content)) return undefined
+			const text = message.content
+				.filter((block) => block.type === 'text' && typeof block.text === 'string')
+				.map((block) => block.text)
+				.join('')
+			return text || undefined
+		}
+
 		switch (event.type) {
 			case 'system':
 				if (event.subtype === 'init' && event.session_id) {
@@ -304,6 +342,17 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 						type: 'started',
 						sessionId: event.session_id,
 						model: event.model,
+					})
+				}
+				break
+
+			// Pi: session header
+			case 'session':
+				if ('id' in event && event.id) {
+					this._resumeToken = { engine: this.cli, sessionId: event.id }
+					this.emit('event', {
+						type: 'started',
+						sessionId: event.id,
 					})
 				}
 				break
@@ -387,6 +436,57 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				}
 				break
 
+			// Pi: message update with text deltas
+			case 'message_start':
+				if (event.message?.role === 'assistant') {
+					this._lastText = ''
+				}
+				break
+
+			// Pi: message update with text deltas
+			case 'message_update':
+				if (event.assistantMessageEvent?.type === 'text_delta' && typeof event.assistantMessageEvent.delta === 'string') {
+					this._lastText = `${this._lastText}${event.assistantMessageEvent.delta}`
+					this.emit('event', { type: 'text', text: event.assistantMessageEvent.delta })
+				}
+				break
+
+			// Pi: message end (capture final text if provided)
+			case 'message_end':
+				if (event.message?.role === 'assistant') {
+					const text = extractPiText(event.message)
+					if (text) this._lastText = text
+				}
+				break
+
+			// Pi: tool execution
+			case 'tool_execution_start':
+				this.pendingTools.set(event.toolCallId, { name: event.toolName, input: event.args ?? {} })
+				this.emit('event', {
+					type: 'tool_start',
+					toolId: event.toolCallId,
+					name: event.toolName,
+					input: event.args ?? {},
+				})
+				break
+
+			case 'tool_execution_end': {
+				this.pendingTools.delete(event.toolCallId)
+				const preview =
+					typeof event.result === 'string'
+						? event.result
+						: event.result
+							? JSON.stringify(event.result)
+							: undefined
+				this.emit('event', {
+					type: 'tool_end',
+					toolId: event.toolCallId,
+					isError: !!event.isError,
+					preview,
+				})
+				break
+			}
+
 			// Claude: result
 			case 'result':
 				if ('session_id' in event) {
@@ -443,6 +543,22 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 					answer: this._lastText,
 					isError: false,
 				})
+				break
+			}
+
+			// Pi: turn end signals completion
+			case 'turn_end': {
+				if (event.message?.role === 'assistant') {
+					const text = extractPiText(event.message)
+					if (text) this._lastText = text
+					const sessionId = this._resumeToken?.sessionId || 'unknown'
+					this.emit('event', {
+						type: 'completed',
+						sessionId,
+						answer: this._lastText,
+						isError: false,
+					})
+				}
 				break
 			}
 		}

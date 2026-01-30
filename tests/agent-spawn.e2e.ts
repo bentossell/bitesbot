@@ -17,6 +17,14 @@ const hasCodex = (() => {
 		return false
 	}
 })()
+const hasPi = (() => {
+	try {
+		const result = spawnSync('which', ['pi'])
+		return result.status === 0
+	} catch {
+		return false
+	}
+})()
 describe.skipIf(!hasDroid)('agent-spawn e2e', () => {
 	describe('droid CLI', () => {
 		it('spawns and receives session_start event', async () => {
@@ -256,6 +264,117 @@ describe.skipIf(!hasCodex)('codex CLI e2e', () => {
 	}, TIMEOUT_MS + 5000)
 })
 
+describe.skipIf(!hasPi)('pi CLI e2e', () => {
+	it('spawns and receives session header', async () => {
+		const events: Record<string, unknown>[] = []
+		let proc: ChildProcess | null = null
+
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				proc?.kill()
+				reject(new Error('Timeout waiting for session header'))
+			}, TIMEOUT_MS)
+
+			proc = spawn('pi', [
+				'--mode', 'json',
+				'What is 2+2? Reply with just the number.',
+			], {
+				cwd: process.cwd(),
+				env: process.env,
+				stdio: ['pipe', 'pipe', 'pipe'],
+			})
+
+			proc.stdin?.end()
+
+			const rl = createInterface({ input: proc.stdout! })
+			
+			rl.on('line', (line) => {
+				try {
+					const event = JSON.parse(line)
+					events.push(event)
+					if (event.type === 'session' && event.id) {
+						clearTimeout(timer)
+						proc?.kill()
+						resolve()
+					}
+				} catch {
+					// Non-JSON line, ignore
+				}
+			})
+
+			proc.on('error', (err) => {
+				clearTimeout(timer)
+				reject(err)
+			})
+		})
+
+		const hasSession = events.some(e => e.type === 'session' && e.id)
+		expect(hasSession).toBe(true)
+	}, TIMEOUT_MS + 5000)
+
+	it('completes simple math and returns answer', async () => {
+		let answer = ''
+		let proc: ChildProcess | null = null
+
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				proc?.kill()
+				reject(new Error('Timeout waiting for turn_end'))
+			}, TIMEOUT_MS)
+
+			proc = spawn('pi', [
+				'--mode', 'json',
+				'What is 7 * 8? Reply with just the number, nothing else.',
+			], {
+				cwd: process.cwd(),
+				env: process.env,
+				stdio: ['pipe', 'pipe', 'pipe'],
+			})
+
+			proc.stdin?.end()
+
+			const rl = createInterface({ input: proc.stdout! })
+			
+			rl.on('line', (line) => {
+				try {
+					const event = JSON.parse(line)
+					if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
+						answer += String(event.assistantMessageEvent.delta ?? '')
+					}
+					if (event.type === 'turn_end') {
+						const content = event.message?.content
+						if (Array.isArray(content)) {
+							const text = content
+								.filter((block: { type?: string; text?: string }) => block.type === 'text')
+								.map((block: { text?: string }) => block.text ?? '')
+								.join('')
+							if (text) answer = text
+						}
+						clearTimeout(timer)
+						proc?.kill()
+						resolve()
+					}
+				} catch {
+					// Non-JSON line, ignore
+				}
+			})
+
+			proc.on('error', (err) => {
+				clearTimeout(timer)
+				reject(err)
+			})
+
+			proc.on('exit', () => {
+				clearTimeout(timer)
+				resolve()
+			})
+		})
+
+		expect(answer).toBeDefined()
+		expect(answer).toContain('56')
+	}, TIMEOUT_MS + 5000)
+})
+
 describe('agent-spawn e2e (skipped - missing deps)', () => {
 	it.skipIf(hasDroid)('requires droid CLI', () => {
 		console.log(`Droid exists: ${hasDroid}`)
@@ -264,5 +383,9 @@ describe('agent-spawn e2e (skipped - missing deps)', () => {
 	it.skipIf(hasCodex)('requires codex CLI', () => {
 		console.log(`Codex exists: ${hasCodex}`)
 		console.log('Skipping codex e2e tests - install codex CLI')
+	})
+	it.skipIf(hasPi)('requires pi CLI', () => {
+		console.log(`Pi exists: ${hasPi}`)
+		console.log('Skipping pi e2e tests - install pi CLI')
 	})
 })

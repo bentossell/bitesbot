@@ -1,0 +1,12 @@
+name: pi
+command: pi
+args:
+  - --mode
+  - json
+inputMode: arg
+resume:
+  flag: --session
+  sessionArg: last
+model:
+  flag: --model
+  default: ""
