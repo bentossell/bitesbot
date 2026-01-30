@@ -41,11 +41,10 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 - Workspace links/concepts indexing
 - MEMORY.md native agent writes
 
-## Open PRs (13)
+## Open PRs (12)
 
 | # | Title | Branch |
 |---|-------|--------|
-| 31 | E2E test suite for all agent adapters | `feat/agent-e2e-testing` |
 | 30 | Agent-to-Agent Communications | `feat/agent-comms-final` |
 | 29 | Skills system for loading/managing agent skills | `feat/skills-system` |
 | 28 | Workspace registry for per-agent isolated workspaces | `feat/agent-workspaces-final` |
@@ -59,6 +58,30 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 | 20 | Telegram-like web UI | `claude/telegram-bot-web-ui-n51Rr` |
 | 8 | Desktop wizard and workspace bootstrap | `feat/desktop-app-ui-wizard` |
 
+## Recommended Merge Order (Assume All Today)
+
+1. #23 — Enforced memory recall workflow + boot context
+2. #27 — Session management registry/lifecycle
+3. #24 — Session tools (history + cross-chat messaging)
+4. #25 — Reminder support for cron system
+5. #26 — Cron fix: recalculate nextRunAtMs on restart
+6. #30 — Agent-to-agent communications
+7. #29 — Skills system
+8. #28 — Workspace registry (per-agent isolated workspaces)
+9. #21 — OpenAI Codex support
+10. #22 — Inflection Pi support
+11. #31 — E2E test suite (already merged)
+12. #20 — Telegram-like web UI (deferred)
+13. #8 — Desktop wizard + workspace bootstrap (deferred)
+
+## Per-PR Knockout Steps
+
+1. Review PR diff and relevant files.
+2. Discuss and confirm expected behavior and any changes.
+3. Implement agreed improvements on the PR branch.
+4. Run validators: `pnpm run lint`, `pnpm run typecheck`, `pnpm test`.
+5. Push updates and move to the next PR.
+
 ## What's Next
 
 ### High Priority (Core UX parity with Clawdbot)
@@ -71,7 +94,7 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 
 4. **Multi-agent support** — Agent-to-agent comms (#30), skills system (#29), isolated workspaces (#28)
 5. **More adapters** — Codex (#21), Pi (#22) for model variety
-6. **Testing** — E2E test suite (#31) for confidence in changes
+6. **Testing** — E2E test suite (merged) for confidence in changes
 
 ### Lower Priority (Deferred)
 
