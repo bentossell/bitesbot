@@ -65,7 +65,7 @@ const main = async () => {
 	const parseCommandBlock = extractParseCommandBlock(bridgeSource)
 	if (parseCommandBlock) {
 		const commands = new Set<string>()
-		const ignoredCommands = new Set(['help', 'models'])
+		const ignoredCommands = new Set(['help', 'models', 'update'])
 		const addMatches = (pattern: RegExp) => {
 			for (const match of parseCommandBlock.matchAll(pattern)) {
 				commands.add(match[1])
