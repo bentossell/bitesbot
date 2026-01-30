@@ -1,5 +1,5 @@
 import { execSync as childExecSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +10,19 @@ const expandHome = (path: string): string => {
 		return join(homedir(), path.slice(2))
 	}
 	return path
+}
+
+const findCommandInNvm = (command: string): string | null => {
+	const nvmDir = join(homedir(), '.nvm', 'versions', 'node')
+	try {
+		for (const version of readdirSync(nvmDir)) {
+			const candidate = join(nvmDir, version, 'bin', command)
+			if (existsSync(candidate)) return candidate
+		}
+	} catch {
+		return null
+	}
+	return null
 }
 
 const cliExists = (command: string): boolean => {
@@ -23,7 +36,7 @@ const cliExists = (command: string): boolean => {
 		childExecSync(`which ${command}`, { stdio: 'ignore' })
 		return true
 	} catch {
-		return false
+		return Boolean(findCommandInNvm(command))
 	}
 }
 
@@ -38,7 +51,7 @@ const resolveCommandPath = (command: string): string => {
 		const result = childExecSync(`which ${command}`, { encoding: 'utf-8' })
 		return result.trim()
 	} catch {
-		return command
+		return findCommandInNvm(command) ?? command
 	}
 }
 
