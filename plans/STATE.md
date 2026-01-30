@@ -27,6 +27,7 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 - JSONL bridge for CLI agents
 - Daemon lifecycle (start/stop/restart)
 - Session management with resume support
+- Session tools (history + cross-chat messaging)
 - Typing indicators and restart notifications
 - Cron job scheduling
 
@@ -42,17 +43,13 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 - MEMORY.md native agent writes
 - Enforced memory recall workflow + deterministic boot context (merged)
 
-## Open PRs (11)
+## Open PRs (7)
 
 | # | Title | Branch |
 |---|-------|--------|
 | 30 | Agent-to-Agent Communications | `feat/agent-comms-final` |
 | 29 | Skills system for loading/managing agent skills | `feat/skills-system` |
-| 28 | Workspace registry for per-agent isolated workspaces | `feat/agent-workspaces-final` |
 | 27 | Session Management - Registry, Lifecycle & History Tools | `feat/session-management-v2` |
-| 26 | Cron: recalculate nextRunAtMs on restart | `fix/cron-recalculate-on-restart` |
-| 25 | Reminder support for cron system | `feat/reminders` |
-| 24 | Session tools for history + cross-chat messaging | `feat/session-tools` |
 | 22 | Inflection Pi support | `feat/pi-support` |
 | 21 | OpenAI Codex support | `feat/codex-support` |
 | 20 | Telegram-like web UI | `claude/telegram-bot-web-ui-n51Rr` |
@@ -63,30 +60,22 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 ### Overlaps / Conflicts
 
 - **#29 vs #30 vs #27** — overlapping files in `src/bridge/session-registry.ts` and `src/bridge/sessions-tools.ts`; #29 includes cross-session messaging work that appears to overlap #30.
-- **#24 vs #29/#30** — similar cross-session messaging features with overlapping bridge/session tooling.
 - **#22 vs #21** — #22 includes Codex work, making #21 redundant if #22 lands.
-- **#25 vs #26** — both modify `src/cron/service.ts`; expect a merge conflict or rebase requirement.
 
 ### Quick Wins / Suggested Order
 
-1. **#28** — isolated workspace registry changes.
-2. **#22 or #21** — choose #22 if we want Codex + Pi together; otherwise #21 only.
-3. **#26 then #25** — merge/rebase to avoid `cron/service.ts` conflict.
-4. **Session/bridge stack** — pick a primary thread (#29 or #24/#30) and drop/merge overlaps.
+1. **#22 or #21** — choose #22 if we want Codex + Pi together; otherwise #21 only.
+2. **Session/bridge stack** — pick a primary thread (#29 or #27/#30) and drop/merge overlaps.
 
 ## Recommended Merge Order (Assume All Today)
 
 1. #27 — Session management registry/lifecycle
-2. #24 — Session tools (history + cross-chat messaging)
-3. #25 — Reminder support for cron system
-4. #26 — Cron fix: recalculate nextRunAtMs on restart
-5. #30 — Agent-to-agent communications
-6. #29 — Skills system
-7. #28 — Workspace registry (per-agent isolated workspaces)
-8. #21 — OpenAI Codex support
-9. #22 — Inflection Pi support
-10. #20 — Telegram-like web UI (deferred)
-11. #8 — Desktop wizard + workspace bootstrap (deferred)
+2. #30 — Agent-to-agent communications
+3. #29 — Skills system
+4. #21 — OpenAI Codex support
+5. #22 — Inflection Pi support
+6. #20 — Telegram-like web UI (deferred)
+7. #8 — Desktop wizard + workspace bootstrap (deferred)
 
 ## Per-PR Knockout Steps
 
@@ -101,14 +90,13 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 ### High Priority (Core UX parity with Clawdbot)
 
 1. **Memory system** — Enforced memory workflow merged; wire up QMD search so the bot reliably recalls context across sessions
-2. **Session management** — Land session registry + history tools (#27, #24) for proper session lifecycle
-3. **Reminders & scheduling** — Merge reminders PR (#25) + cron fix (#26) for proactive bot actions
+2. **Session management** — Decide on session registry + agent comms (#27 vs #29/#30) for proper session lifecycle
 
 ### Medium Priority
 
-4. **Multi-agent support** — Agent-to-agent comms (#30), skills system (#29), isolated workspaces (#28)
-5. **More adapters** — Codex (#21), Pi (#22) for model variety
-6. **Testing** — E2E test suite (merged) for confidence in changes
+3. **Multi-agent support** — Agent-to-agent comms (#30), skills system (#29)
+4. **More adapters** — Codex (#21), Pi (#22) for model variety
+5. **Testing** — E2E test suite (merged) for confidence in changes
 
 ### Lower Priority (Deferred)
 
@@ -138,7 +126,7 @@ Since we're a pass-through for CLIs, agents inherit whatever tools their CLI pro
 
 - **Browser/web access** — wrap existing `agent-browser` skill behind a gateway tool schema so any CLI can invoke it consistently
 - **Web search + fetch** — dedicated tools for uniform UX across adapters
-- **Session tools** — `sessions_list`, `sessions_history`, `sessions_send` for cross-session orchestration (already in progress via PRs #24, #27)
+- **Session tools** — `sessions_list`, `sessions_history`, `sessions_send` for cross-session orchestration (merged)
 
 This gives users a reliable baseline regardless of which CLI they're using.
 
