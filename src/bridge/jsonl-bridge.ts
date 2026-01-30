@@ -1095,7 +1095,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		}
 
 		// Inject any pending subagent results into the prompt
-		const pendingResults = formatPendingResultsForInjection(chatId)
+		const pendingResults = formatPendingResultsForInjection(chatId, resumeToken?.sessionId)
 		if (pendingResults) {
 			prompt = `${pendingResults}\n\n${prompt}`
 			console.log(`[jsonl-bridge] Injected subagent results into prompt`)

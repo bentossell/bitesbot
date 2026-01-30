@@ -32,6 +32,7 @@ export type SpawnOptions = {
 }
 
 const MAX_CONCURRENT_PER_CHAT = 4
+const PENDING_RESULT_TTL_MS = 1000 * 60 * 60 * 6
 
 export class SubagentRegistry {
 	private runs = new Map<string, SubagentRunRecord>()
@@ -157,13 +158,30 @@ export class SubagentRegistry {
 		return pruned
 	}
 
+	// Remove completed/error/stopped runs older than TTL
+	pruneExpired(ttlMs = PENDING_RESULT_TTL_MS, now = Date.now()): number {
+		let pruned = 0
+		for (const record of [...this.runs.values()]) {
+			const isDone = record.status === 'completed' || record.status === 'error' || record.status === 'stopped'
+			if (!isDone) continue
+			const endedAt = record.endedAt ?? record.createdAt
+			if (endedAt && now - endedAt > ttlMs) {
+				if (this.delete(record.runId)) pruned++
+			}
+		}
+		return pruned
+	}
+
 	/**
 	 * Get completed subagent results that haven't been injected yet
 	 */
-	getPendingResults(chatId: number | string): SubagentRunRecord[] {
-		return this.list(chatId).filter(r => 
-			(r.status === 'completed' || r.status === 'error') && 
-			!r.resultInjected
+	getPendingResults(chatId: number | string, parentSessionId?: string): SubagentRunRecord[] {
+		if (!parentSessionId) return []
+		this.pruneExpired()
+		return this.list(chatId).filter(r =>
+			(r.status === 'completed' || r.status === 'error') &&
+			!r.resultInjected &&
+			r.parentSessionId === parentSessionId
 		)
 	}
 
@@ -233,6 +251,7 @@ export const loadSubagentRegistry = async (): Promise<number> => {
 		const data = await readFile(registryPath, 'utf-8')
 		const records = JSON.parse(data) as SubagentRunRecord[]
 		subagentRegistry.fromJSON(records)
+		subagentRegistry.pruneExpired()
 		return records.length
 	} catch {
 		// File doesn't exist or invalid - start fresh
@@ -243,8 +262,11 @@ export const loadSubagentRegistry = async (): Promise<number> => {
 /**
  * Format pending results for injection into prompt
  */
-export const formatPendingResultsForInjection = (chatId: number | string): string | null => {
-	const pending = subagentRegistry.getPendingResults(chatId)
+export const formatPendingResultsForInjection = (
+	chatId: number | string,
+	parentSessionId?: string
+): string | null => {
+	const pending = subagentRegistry.getPendingResults(chatId, parentSessionId)
 	if (pending.length === 0) return null
 
 	const lines: string[] = ['[Subagent Results]']

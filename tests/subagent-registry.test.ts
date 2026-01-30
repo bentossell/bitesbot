@@ -159,33 +159,52 @@ describe('SubagentRegistry', () => {
 	})
 
 	describe('pending results', () => {
-		it('returns completed results not yet injected', () => {
-			const r = registry.spawn({ chatId: 123, task: 'task', cli: 'droid' })
+		it('returns completed results for matching parent session', () => {
+			const r = registry.spawn({ chatId: 123, task: 'task', cli: 'droid', parentSessionId: 'sess-1' })
 			registry.markRunning(r.runId, 'sess')
 			registry.markCompleted(r.runId, 'Result here')
 
-			const pending = registry.getPendingResults(123)
+			const pending = registry.getPendingResults(123, 'sess-1')
 			expect(pending.length).toBe(1)
 			expect(pending[0].result).toBe('Result here')
 		})
 
 		it('excludes already injected results', () => {
-			const r = registry.spawn({ chatId: 123, task: 'task', cli: 'droid' })
+			const r = registry.spawn({ chatId: 123, task: 'task', cli: 'droid', parentSessionId: 'sess-1' })
 			registry.markRunning(r.runId, 'sess')
 			registry.markCompleted(r.runId, 'Result')
 			registry.markResultsInjected([r.runId])
 
-			expect(registry.getPendingResults(123).length).toBe(0)
+			expect(registry.getPendingResults(123, 'sess-1').length).toBe(0)
 		})
 
 		it('includes error results', () => {
-			const r = registry.spawn({ chatId: 123, task: 'task', cli: 'droid' })
+			const r = registry.spawn({ chatId: 123, task: 'task', cli: 'droid', parentSessionId: 'sess-1' })
 			registry.markRunning(r.runId, 'sess')
 			registry.markError(r.runId, 'Failed!')
 
-			const pending = registry.getPendingResults(123)
+			const pending = registry.getPendingResults(123, 'sess-1')
 			expect(pending.length).toBe(1)
 			expect(pending[0].error).toBe('Failed!')
+		})
+
+		it('skips results for non-matching parent session', () => {
+			const r = registry.spawn({ chatId: 123, task: 'task', cli: 'droid', parentSessionId: 'sess-1' })
+			registry.markRunning(r.runId, 'sess')
+			registry.markCompleted(r.runId, 'Result')
+
+			expect(registry.getPendingResults(123, 'sess-2').length).toBe(0)
+		})
+
+		it('prunes expired results before returning', () => {
+			const now = Date.now()
+			const r = registry.spawn({ chatId: 123, task: 'task', cli: 'droid', parentSessionId: 'sess-1' })
+			registry.markRunning(r.runId, 'sess')
+			registry.markCompleted(r.runId, 'Result')
+			registry.update(r.runId, { endedAt: now - 1000 * 60 * 60 * 7 })
+
+			expect(registry.getPendingResults(123, 'sess-1').length).toBe(0)
+			expect(registry.get(r.runId)).toBeUndefined()
 		})
 	})
 
