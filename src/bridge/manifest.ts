@@ -12,15 +12,104 @@ const expandHome = (path: string): string => {
 	return path
 }
 
-const findCommandInNvm = (command: string): string | null => {
-	const nvmDir = join(homedir(), '.nvm', 'versions', 'node')
+/**
+ * Common CLI installation directories to search.
+ * Order matters - first match wins.
+ */
+const getCommonBinDirs = (): string[] => {
+	const home = homedir()
+	const dirs: string[] = []
+	const seen = new Set<string>()
+	const pushDir = (dir?: string) => {
+		if (!dir) return
+		const normalized = dir.replace(/\/+$/, '')
+		if (!normalized || seen.has(normalized)) return
+		seen.add(normalized)
+		dirs.push(normalized)
+	}
+
+	// 0. Current PATH entries (if any)
+	for (const dir of (process.env.PATH ?? '').split(':')) {
+		pushDir(dir)
+	}
+
+	// 1. Factory CLI (droid)
+	pushDir(join(home, '.factory', 'bin'))
+
+	// 2. Bun global installs
+	pushDir(join(home, '.bun', 'bin'))
+
+	// 3. Claude CLI (Anthropic)
+	pushDir(join(home, '.claude', 'bin'))
+
+	// 4. User-local installs
+	pushDir(join(home, '.local', 'bin'))
+	pushDir(join(home, '.local', 'share', 'pnpm'))
+	pushDir(join(home, 'Library', 'pnpm'))
+	pushDir(process.env.PNPM_HOME)
+	pushDir(process.env.NPM_CONFIG_PREFIX ? join(process.env.NPM_CONFIG_PREFIX, 'bin') : undefined)
+	pushDir(process.env.YARN_GLOBAL_FOLDER ? join(process.env.YARN_GLOBAL_FOLDER, 'bin') : undefined)
+	pushDir(join(home, '.yarn', 'bin'))
+	pushDir(join(home, '.config', 'yarn', 'global', 'node_modules', '.bin'))
+	pushDir(join(process.env.VOLTA_HOME ?? join(home, '.volta'), 'bin'))
+	pushDir(join(process.env.ASDF_DIR ?? join(home, '.asdf'), 'shims'))
+
+	// 5. NVM Node versions (scan all versions)
+	const nvmDir = join(home, '.nvm', 'versions', 'node')
 	try {
-		for (const version of readdirSync(nvmDir)) {
-			const candidate = join(nvmDir, version, 'bin', command)
-			if (existsSync(candidate)) return candidate
+		for (const version of readdirSync(nvmDir).sort().reverse()) {
+			pushDir(join(nvmDir, version, 'bin'))
 		}
 	} catch {
-		return null
+		// NVM not installed
+	}
+
+	// 6. FNM Node versions
+	const fnmDir = process.env.FNM_DIR ?? join(home, '.fnm')
+	const fnmVersionsDir = join(fnmDir, 'node-versions')
+	try {
+		for (const version of readdirSync(fnmVersionsDir).sort().reverse()) {
+			pushDir(join(fnmVersionsDir, version, 'installation', 'bin'))
+		}
+	} catch {
+		// FNM not installed
+	}
+
+	// 7. Homebrew (Apple Silicon and Intel)
+	pushDir('/opt/homebrew/bin')
+	pushDir('/opt/homebrew/sbin')
+	pushDir('/usr/local/bin')
+	pushDir('/usr/local/sbin')
+
+	// 8. Global npm
+	pushDir('/usr/local/lib/node_modules/.bin')
+	pushDir('/opt/homebrew/lib/node_modules/.bin')
+
+	// 9. Cargo (for Rust CLIs)
+	pushDir(join(home, '.cargo', 'bin'))
+
+	// 10. Go binaries
+	pushDir(join(home, 'go', 'bin'))
+
+	// 11. Standard system paths
+	pushDir('/usr/bin')
+	pushDir('/bin')
+	pushDir('/usr/sbin')
+	pushDir('/sbin')
+
+	return dirs
+}
+
+/**
+ * Search common installation directories for a command.
+ * Returns the absolute path if found, null otherwise.
+ */
+const findCommandInCommonPaths = (command: string): string | null => {
+	for (const dir of getCommonBinDirs()) {
+		const candidate = join(dir, command)
+		if (existsSync(candidate)) {
+			return candidate
+		}
 	}
 	return null
 }
@@ -31,12 +120,13 @@ const cliExists = (command: string): boolean => {
 	if (expanded.includes('/')) {
 		return existsSync(expanded)
 	}
-	// Otherwise use which
+	// Try which first (respects current PATH)
 	try {
 		childExecSync(`which ${command}`, { stdio: 'ignore' })
 		return true
 	} catch {
-		return Boolean(findCommandInNvm(command))
+		// Fall back to searching common directories
+		return Boolean(findCommandInCommonPaths(command))
 	}
 }
 
@@ -46,12 +136,13 @@ const resolveCommandPath = (command: string): string => {
 	if (expanded.includes('/')) {
 		return expanded
 	}
-	// Otherwise resolve via which
+	// Try which first (respects current PATH)
 	try {
 		const result = childExecSync(`which ${command}`, { encoding: 'utf-8' })
 		return result.trim()
 	} catch {
-		return findCommandInNvm(command) ?? command
+		// Fall back to searching common directories
+		return findCommandInCommonPaths(command) ?? command
 	}
 }
 
