@@ -18,6 +18,10 @@
 - `pnpm run gateway:stop` - Stop the daemon
 - `pnpm run gateway:status` - Check daemon status
 - `pnpm run gateway:restart` - Stop and restart daemon
+- `pnpm run gateway:launchd:start` - Load launchd service
+- `pnpm run gateway:launchd:stop` - Unload launchd service
+- `pnpm run gateway:launchd:status` - Check launchd service status
+- `pnpm run gateway:launchd:restart` - Restart launchd service
 
 ## Project Structure
 

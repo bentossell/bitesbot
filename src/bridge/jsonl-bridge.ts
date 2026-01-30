@@ -113,6 +113,39 @@ const parseSlashCommand = (text: string): { command: string; rest: string } | nu
 	return { command, rest: match[2]?.trim() ?? '' }
 }
 
+const UPDATE_LOCK_TTL_MS = 10 * 60 * 1000
+let updateLockAt: number | null = null
+
+const isUpdateLocked = (): boolean =>
+	updateLockAt !== null && Date.now() - updateLockAt < UPDATE_LOCK_TTL_MS
+
+const acquireUpdateLock = () => {
+	updateLockAt = Date.now()
+}
+
+const releaseUpdateLock = () => {
+	updateLockAt = null
+}
+
+const isLaunchdEnv = (): boolean => {
+	const flag = process.env.TG_GATEWAY_LAUNCHD?.toLowerCase()
+	if (flag && ['1', 'true', 'yes'].includes(flag)) return true
+	return Boolean(process.env.TG_GATEWAY_LAUNCHD_LABEL || process.env.TG_GATEWAY_LAUNCHD_PLIST)
+}
+
+const spawnDetached = (command: string, args: string[], cwd: string) => {
+	const child = spawn(command, args, {
+		cwd,
+		detached: true,
+		stdio: 'ignore',
+		env: process.env,
+	})
+	child.on('error', (err) => {
+		console.error(`[jsonl-bridge] Failed to spawn ${command}:`, err)
+	})
+	child.unref()
+}
+
 const MODEL_ALIASES: Record<string, string> = {
 	// Claude models
 	opus: 'claude-opus-4-5-20251101',
@@ -290,16 +323,20 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 	const slashCommand = parseSlashCommand(trimmed)
 	if (slashCommand?.command === 'update') {
 		console.log('[jsonl-bridge] Update requested via /update command')
+		if (isUpdateLocked()) {
+			const remainingMs = UPDATE_LOCK_TTL_MS - (Date.now() - (updateLockAt ?? 0))
+			const remainingMin = Math.max(1, Math.ceil(remainingMs / 60000))
+			return { handled: true, response: `⏳ Update already running. Try again in ~${remainingMin}m.` }
+		}
+		acquireUpdateLock()
 		setTimeout(() => {
 			try {
-				const child = spawn('pnpm', ['run', 'gateway:restart:build'], {
-					cwd: workingDirectory,
-					detached: true,
-					stdio: 'ignore',
-					env: process.env,
-				})
-				child.unref()
+				const script = isLaunchdEnv()
+					? 'gateway:launchd:restart:build'
+					: 'gateway:restart:build'
+				spawnDetached('pnpm', ['run', script], workingDirectory)
 			} catch (err) {
+				releaseUpdateLock()
 				console.error('[jsonl-bridge] Failed to spawn update process:', err)
 			}
 		}, 500)
@@ -309,6 +346,15 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 	// /restart - gracefully restart the gateway (launchd will respawn)
 	if (slashCommand?.command === 'restart') {
 		console.log('[jsonl-bridge] Restart requested via /restart command')
+		if (!isLaunchdEnv()) {
+			setTimeout(() => {
+				try {
+					spawnDetached('pnpm', ['run', 'gateway:restart'], workingDirectory)
+				} catch (err) {
+					console.error('[jsonl-bridge] Failed to spawn restart process:', err)
+				}
+			}, 200)
+		}
 		// Schedule exit after sending response (give time for message to be sent)
 		setTimeout(() => {
 			console.log('[jsonl-bridge] Exiting for restart...')
