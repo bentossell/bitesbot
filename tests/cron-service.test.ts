@@ -167,4 +167,91 @@ describe('CronService', () => {
 			await rm(dir, { recursive: true, force: true })
 		}
 	})
+
+	it('adds and lists reminders', async () => {
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir })
+		try {
+			// Add a regular job
+			await service.add({ name: 'Regular job', schedule: { kind: 'every', everyMs: 60000 } })
+			// Add reminders
+			await service.add({
+				name: 'Call Jerry',
+				schedule: { kind: 'at', atMs: Date.now() + 3600000 },
+				isReminder: true,
+				delivery: 'telegram',
+			})
+			await service.add({
+				name: 'Submit expenses',
+				schedule: { kind: 'at', atMs: Date.now() + 7200000 },
+				isReminder: true,
+				delivery: 'email',
+			})
+
+			// List all jobs should include both
+			const jobs = await service.list()
+			expect(jobs.length).toBe(3)
+
+			// List reminders should only include reminders
+			const reminders = await service.listReminders()
+			expect(reminders.length).toBe(2)
+			expect(reminders.map((r) => r.name).sort()).toEqual(['Call Jerry', 'Submit expenses'])
+			expect(reminders[0].isReminder).toBe(true)
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('formats reminder list correctly', async () => {
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir })
+		try {
+			await service.add({
+				name: 'Email reminder',
+				schedule: { kind: 'at', atMs: Date.now() + 3600000 },
+				isReminder: true,
+				delivery: 'email',
+			})
+			await service.add({
+				name: 'Telegram reminder',
+				schedule: { kind: 'at', atMs: Date.now() + 7200000 },
+				isReminder: true,
+				delivery: 'telegram',
+			})
+
+			const reminders = await service.listReminders()
+			const formatted = service.formatReminderList(reminders)
+			expect(formatted).toContain('🔔')
+			expect(formatted).toContain('Email reminder')
+			expect(formatted).toContain('[email]')
+			expect(formatted).toContain('Telegram reminder')
+			// telegram delivery should not show [telegram] tag (it's default)
+			expect(formatted).not.toContain('[telegram]')
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('shows reminder icon in job list', async () => {
+		const { dir, path, runsDir } = await createTempStorePath()
+		const service = new CronService({ storePath: path, runsDir })
+		try {
+			await service.add({
+				name: 'Reminder job',
+				schedule: { kind: 'at', atMs: Date.now() + 3600000 },
+				isReminder: true,
+			})
+			await service.add({
+				name: 'Regular job',
+				schedule: { kind: 'every', everyMs: 60000 },
+			})
+
+			const jobs = await service.list()
+			const formatted = service.formatJobList(jobs)
+			expect(formatted).toContain('Reminder job 🔔')
+			expect(formatted).not.toContain('Regular job 🔔')
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
 })

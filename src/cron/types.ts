@@ -11,6 +11,9 @@ export type SessionTarget = 'main' | 'isolated'
 /** Thinking level for models that support it (e.g., Opus) */
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high'
 
+/** Delivery method for reminder notifications */
+export type ReminderDelivery = 'telegram' | 'email' | 'both'
+
 export type CronJob = {
 	id: string
 	name: string
@@ -33,6 +36,10 @@ export type CronJob = {
 	lastSummary?: string
 	/** Duration of last run in ms */
 	lastDurationMs?: number
+	/** Flag to identify reminder jobs (vs regular cron jobs) */
+	isReminder?: boolean
+	/** Delivery method for reminders (telegram, email, or both) */
+	delivery?: ReminderDelivery
 }
 
 export type CronStore = {
@@ -48,6 +55,10 @@ export type CronJobCreate = {
 	sessionTarget?: SessionTarget
 	model?: string
 	thinking?: ThinkingLevel
+	/** Flag to identify reminder jobs */
+	isReminder?: boolean
+	/** Delivery method for reminders */
+	delivery?: ReminderDelivery
 }
 
 /** A single cron run record for history */
