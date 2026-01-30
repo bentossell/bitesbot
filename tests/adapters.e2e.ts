@@ -420,6 +420,11 @@ const getAvailableAdapters = (): AdapterInfo[] =>
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+const isNoiseMessage = (text: string) => {
+	const trimmed = text.trim()
+	return trimmed.startsWith('💰') || trimmed.toLowerCase().startsWith('cost:') || trimmed.toLowerCase().startsWith('switched to ')
+}
+
 const waitForBotMessageContaining = async (
 	client: TelegramClient,
 	bot: string,
@@ -427,12 +432,21 @@ const waitForBotMessageContaining = async (
 	timeoutMs: number
 ) => {
 	const deadline = Date.now() + timeoutMs
+	const cutoff = Date.now() - 1500
+	const needle = substring.toLowerCase()
+	const seenIds = new Set<number>()
 	while (Date.now() < deadline) {
-		const messages = await client.getMessages(bot, { limit: 10 })
-		const match = messages.find((msg) => 
-			'message' in msg && msg.message?.includes(substring) && msg.out === false
-		)
-		if (match && 'message' in match) return match.message
+		const messages = await client.getMessages(bot, { limit: 12 })
+		for (const msg of messages) {
+			if (!('message' in msg) || !msg.message || msg.out === true || !msg.id) continue
+			if (seenIds.has(msg.id)) continue
+			const msgDate = msg.date ? msg.date * 1000 : 0
+			if (msgDate < cutoff) continue
+			const text = String(msg.message)
+			if (isNoiseMessage(text)) continue
+			seenIds.add(msg.id)
+			if (text.toLowerCase().includes(needle)) return text
+		}
 		await delay(1500)
 	}
 	throw new Error(`Timeout waiting for bot reply containing: ${substring}`)
@@ -446,7 +460,7 @@ const waitForNewBotMessage = async (
 	timeoutMs: number,
 ): Promise<string> => {
 	const deadline = Date.now() + timeoutMs
-	const cutoff = Math.max(0, afterTimestamp - 1500)
+	const cutoff = Math.max(0, afterTimestamp - 500)
 	const seenIds = new Set<number>()
 	
 	while (Date.now() < deadline) {
@@ -458,8 +472,10 @@ const waitForNewBotMessage = async (
 			const msgDate = msg.date ? msg.date * 1000 : 0
 			if (msgDate < cutoff) continue
 			seenIds.add(msg.id)
-			if (predicate(msg.message)) {
-				return msg.message
+			const text = String(msg.message)
+			if (isNoiseMessage(text)) continue
+			if (predicate(text)) {
+				return text
 			}
 		}
 		await delay(1500)

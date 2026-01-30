@@ -102,24 +102,44 @@ const parseSlashCommand = (text: string): { command: string; rest: string } | nu
 	return { command, rest: match[2]?.trim() ?? '' }
 }
 
-const resolveModelForCli = (cli: string, model?: string): string | undefined => {
+const MODEL_ALIASES: Record<string, string> = {
+	// Claude models
+	opus: 'claude-opus-4-5-20251101',
+	sonnet: 'claude-sonnet-4-5-20250929',
+	haiku: 'claude-haiku-4-5-20251001',
+	// OpenAI Codex models
+	codex: 'gpt-5.2',
+	'codex-max': 'gpt-5.1-codex-max',
+	// Gemini
+	gemini: 'gemini-3-pro-preview',
+	'gemini-flash': 'gemini-3-flash-preview',
+}
+
+const resolveModelAlias = (model?: string): string | undefined => {
 	if (!model) return undefined
 	const normalized = model.toLowerCase()
+	return MODEL_ALIASES[normalized] ?? model
+}
+
+const resolveModelForCli = (cli: string, model?: string): string | undefined => {
+	const resolved = resolveModelAlias(model)
+	if (!resolved) return undefined
+	const normalized = resolved.toLowerCase()
 
 	if (cli === 'codex') {
 		if (normalized.includes('claude') || normalized.includes('gemini')) return undefined
-		return model
+		return resolved
 	}
 
 	if (cli === 'claude' || cli === 'droid') {
-		return normalized.includes('claude') ? model : undefined
+		return normalized.includes('claude') ? resolved : undefined
 	}
 
 	if (cli.startsWith('gemini')) {
-		return normalized.includes('gemini') ? model : undefined
+		return normalized.includes('gemini') ? resolved : undefined
 	}
 
-	return model
+	return resolved
 }
 
 const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> => {
@@ -141,26 +161,46 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: `Switched to ${cli}.` }
 	}
 
+	// /models command - list model aliases
+	if (trimmed === '/models') {
+		const current = persistentStore?.getChatSettings(chatId).model ?? 'default'
+		const lines = [
+			`Current model: ${current}`,
+			'Aliases:',
+			...Object.entries(MODEL_ALIASES).map(([alias, id]) => `- ${alias}: ${id}`),
+		]
+		return { handled: true, response: lines.join('\n') }
+	}
+
+	if (trimmed === '/help') {
+		const lines = [
+			'Available Commands:',
+			'/use <cli> - switch adapter',
+			'/new - start a fresh session',
+			'/status - show session status',
+			'/model <alias|id> - set model for next session',
+			'/models - list available model aliases',
+			'/stream on|off - toggle streaming responses',
+			'/verbose on|off - toggle tool output',
+			'/spawn <task> - run a subagent task',
+			'/subagents - list subagent runs',
+			'/cron <expr> <message> - schedule a cron job',
+			'/crons - list cron jobs',
+			'/remind <time> <message> - schedule a reminder',
+			'/stop - terminate the current session',
+			'/interrupt - stop current task and continue queue',
+			'/restart - restart the gateway',
+		]
+		return { handled: true, response: lines.join('\n') }
+	}
+
 	// /model command - switch AI model (with aliases)
 	if (trimmed.startsWith('/model')) {
 		const arg = trimmed.slice(6).trim().toLowerCase()
 		if (!arg) {
 			return { handled: true, response: 'Usage: /model <alias>\nAliases: opus, sonnet, haiku, codex\nFull IDs also supported (e.g., claude-opus-4-5-20251101)' }
 		}
-		// Model alias mappings (based on CLI docs)
-		const modelAliases: Record<string, string> = {
-			// Claude models
-			opus: 'claude-opus-4-5-20251101',
-			sonnet: 'claude-sonnet-4-5-20250929',
-			haiku: 'claude-haiku-4-5-20251001',
-			// OpenAI Codex models
-			codex: 'gpt-5.2',
-			'codex-max': 'gpt-5.1-codex-max',
-			// Gemini
-			gemini: 'gemini-3-pro-preview',
-			'gemini-flash': 'gemini-3-flash-preview',
-		}
-		const modelId = modelAliases[arg] || arg
+		const modelId = resolveModelAlias(arg) ?? arg
 		// Store model preference (will be passed to CLI on next session)
 		// Note: setChatSettings merges with existing settings, so this won't clobber streaming/verbose
 		if (persistentStore) {
