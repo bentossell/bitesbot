@@ -21,6 +21,7 @@ Example:
     "subagentFallbackCli": "droid",
     "workingDirectory": "/Users/mini/bites",
     "adaptersDir": "/Users/mini/repos/bitesbot/adapters",
+    "envFile": "~/.secrets",
     "memory": {
       "enabled": true,
       "workspaceDir": "/Users/mini/bites",
@@ -45,6 +46,7 @@ Notes:
 - `botToken` is required.
 - `authToken` enables bearer auth on HTTP/WS endpoints.
 - `allowedChatIds` filters inbound Telegram updates.
+- `bridge.envFile` loads environment variables from a shell-style file (supports `export KEY=value` and `KEY=value`). Useful for passing API keys to CLI adapters (e.g., `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) when running as a launchd service.
 - `bridge.memory` is optional; defaults are applied when omitted.
 
 ## Environment variables
@@ -63,6 +65,7 @@ Bridge:
 - `TG_GATEWAY_SUBAGENT_FALLBACK_CLI` (optional)
 - `TG_GATEWAY_WORKING_DIR` (default: `process.cwd()`)
 - `TG_GATEWAY_ADAPTERS_DIR` (default: `./adapters`)
+- `TG_GATEWAY_ENV_FILE` (path to shell-style env file, e.g., `~/.secrets`)
 
 Memory:
 

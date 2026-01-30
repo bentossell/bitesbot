@@ -11,6 +11,7 @@ export type BridgeConfig = {
 	workingDirectory: string
 	adaptersDir: string
 	memory?: MemoryConfig
+	envFile?: string
 }
 
 export type GatewayConfig = {
@@ -97,12 +98,18 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 	const allowedChatIds = parseAllowedChatIds(env.TG_GATEWAY_ALLOWED_CHAT_IDS, fileConfig.allowedChatIds)
 
 	const fileBridge: Partial<BridgeConfig> = fileConfig.bridge ?? {}
+	const resolveEnvFilePath = (path?: string): string | undefined => {
+		if (!path) return undefined
+		if (path.startsWith('~')) return join(homedir(), path.slice(1))
+		return path
+	}
 	const bridge: BridgeConfig = {
 		enabled: env.TG_GATEWAY_BRIDGE_ENABLED === 'true' || fileBridge.enabled === true,
 		defaultCli: env.TG_GATEWAY_DEFAULT_CLI ?? fileBridge.defaultCli ?? 'claude',
 		subagentFallbackCli: env.TG_GATEWAY_SUBAGENT_FALLBACK_CLI ?? fileBridge.subagentFallbackCli,
 		workingDirectory: env.TG_GATEWAY_WORKING_DIR ?? fileBridge.workingDirectory ?? DEFAULT_WORKSPACE_DIR,
 		adaptersDir: env.TG_GATEWAY_ADAPTERS_DIR ?? fileBridge.adaptersDir ?? join(process.cwd(), 'adapters'),
+		envFile: resolveEnvFilePath(env.TG_GATEWAY_ENV_FILE ?? fileBridge.envFile),
 	}
 
 	const fileMemory: Partial<MemoryConfig> = (fileBridge.memory ?? {}) as Partial<MemoryConfig>

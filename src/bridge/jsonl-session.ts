@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { createInterface, type Interface } from 'node:readline'
 import type { CLIManifest } from './manifest.js'
+import { loadEnvFile } from './env-file.js'
 
 export type SessionState = 'active' | 'suspended' | 'completed'
 
@@ -107,14 +108,17 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		chatId: number | string,
 		private manifest: CLIManifest,
 		private workingDir: string,
-		options?: { isSubagent?: boolean }
+		options?: { isSubagent?: boolean; envFile?: string }
 	) {
 		super()
 		this.id = `${chatId}-${Date.now()}`
 		this.chatId = chatId
 		this.cli = manifest.name
 		this.isSubagent = options?.isSubagent ?? false
+		this.envFile = options?.envFile
 	}
+
+	private envFile?: string
 
 	get state(): SessionState {
 		return this._state
@@ -224,7 +228,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 
 		this.process = spawn(this.manifest.command, args, {
 			cwd: this.workingDir,
-			env: process.env,
+			env: loadEnvFile(this.envFile),
 			stdio: ['pipe', 'pipe', 'pipe'],
 		})
 

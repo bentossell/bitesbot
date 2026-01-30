@@ -75,6 +75,7 @@ export type BridgeConfig = {
 	workingDirectory: string
 	allowedChatIds?: number[]
 	memory?: MemoryConfig
+	envFile?: string
 }
 
 export type BridgeHandle = {
@@ -805,6 +806,7 @@ type SpawnSubagentOptions = {
 	workingDirectory: string
 	memory?: MemoryConfig
 	model?: string
+	envFile?: string
 	send: (chatId: number | string, text: string) => Promise<void>
 	logMessage?: (
 		chatId: number | string,
@@ -879,7 +881,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 	// Run subagent in background on the Subagent lane (fire-and-forget)
 	void enqueueCommandInLane(CommandLane.Subagent, async () => {
 		// Create a new session for the subagent (marked as subagent, no resume - fresh context)
-		const session = new JsonlSession(`subagent-${record.runId}`, manifest, workingDirectory, { isSubagent: true })
+		const session = new JsonlSession(`subagent-${record.runId}`, manifest, workingDirectory, { isSubagent: true, envFile: opts.envFile })
 
 		let lastText = ''
 		let loggedFinal = false
@@ -1163,7 +1165,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			}
 		}
 
-		const session = new JsonlSession(chatId, manifest, config.workingDirectory)
+		const session = new JsonlSession(chatId, manifest, config.workingDirectory, { envFile: config.envFile })
 		sessionStore.set(session)
 
 		// Get chat settings dynamically (allows mid-session changes via /stream and /verbose)
@@ -1340,6 +1342,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 								workingDirectory: config.workingDirectory,
 								memory: config.memory,
 								model: settings.model,
+								envFile: config.envFile,
 								send,
 								logMessage: persistentStore.logMessage,
 								parentSessionId: currentSessionId,
@@ -1410,6 +1413,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 												workingDirectory: config.workingDirectory,
 												memory: config.memory,
 												model: settings.model,
+												envFile: config.envFile,
 												send,
 												logMessage: persistentStore.logMessage,
 												parentSessionId: currentSessionId,
@@ -1628,6 +1632,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						workingDirectory: config.workingDirectory,
 						memory: config.memory,
 						model: settings.model,
+						envFile: config.envFile,
 						send,
 						logMessage: persistentStore.logMessage,
 					})
@@ -1668,6 +1673,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				workingDirectory: config.workingDirectory,
 				memory: config.memory,
 				model: settings.model,
+				envFile: config.envFile,
 				send,
 				logMessage: persistentStore.logMessage,
 			})
@@ -1754,7 +1760,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		await send(targetChatId, `⏰ Cron (isolated): ${job.name}`)
 
 		void enqueueCommandInLane(CommandLane.Cron, async () => {
-			const session = new JsonlSession(`cron-${job.id}-${Date.now()}`, manifest, config.workingDirectory)
+			const session = new JsonlSession(`cron-${job.id}-${Date.now()}`, manifest, config.workingDirectory, { envFile: config.envFile })
 			let lastText = ''
 			let completed = false
 			const modelOverride = job.model ?? persistentStore.getChatSettings(targetChatId).model
