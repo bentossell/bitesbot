@@ -78,6 +78,48 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 - Web UI (#20) — secondary surface, not core focus
 - Desktop app wizard (#8) — nice-to-have for onboarding
 
+## Launch Goals (Open Source Release)
+
+This will be an open source project anyone can self-host. Before launch, we need:
+
+### Onboarding Experience
+
+The Web UI wizard (#8) and desktop app are **deferred** — not high priority now. But we still need a clear path to get people running bitesbot easily:
+
+- Simple `npx` or `npm install -g` setup
+- Minimal config: Telegram bot token + pick a CLI adapter
+- Good error messages and `--doctor` diagnostics
+- Clear documentation for first-time users
+
+### First-Class Tooling
+
+Since we're a pass-through for CLIs, agents inherit whatever tools their CLI provides. But we want **gateway-managed defaults** for common needs:
+
+- **Browser/web access** — wrap existing `agent-browser` skill behind a gateway tool schema so any CLI can invoke it consistently
+- **Web search + fetch** — dedicated tools for uniform UX across adapters
+- **Session tools** — `sessions_list`, `sessions_history`, `sessions_send` for cross-session orchestration (already in progress via PRs #24, #27)
+
+This gives users a reliable baseline regardless of which CLI they're using.
+
+### Security (Pre-Launch)
+
+- DM pairing / allowlist for unknown senders
+- Exec approval system (ask/allow/deny modes)
+- Clear documentation on what access the bot has
+
+## Reference Docs
+
+For deeper comparison with the Clawdbot inspiration project:
+
+- **Core UX Architecture**: `/Users/mini/bites/specs/clawdbot-vs-bitesbot-core-ux-architecture.md` — covers runtime model, system prompt injection, agent-to-agent comms, and pros/cons of pass-through vs embedded runtime
+- **Full Feature Comparison**: `/Users/mini/bites/specs/clawdbot-vs-bitesbot-comparison.md` — comprehensive breakdown of all features, gaps, and recommendations
+
+Key insights from those docs:
+- Keep the CLI pass-through philosophy (leverage best-in-class coding CLIs without maintaining our own runtime)
+- Enforce 3 gateway-level contracts: boot context injection, memory recall workflow, session tools
+- Browser automation should be first-class (not just a skill)
+- Don't try to match Clawdbot feature-for-feature — focus on simplicity + essential features
+
 ## Key Files
 
 - `src/gateway/server.ts` — Telegram bot, HTTP/WS server
