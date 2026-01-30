@@ -1,6 +1,7 @@
 import { loadConfig } from '../gateway/config.js'
 import { startGatewayServer } from '../gateway/server.js'
 import { startBridge, type BridgeHandle, setWorkspaceDir } from '../bridge/index.js'
+import { logToFile } from '../logging/file.js'
 import { removePidFile, writePidFile } from './pid.js'
 
 export type RunOptions = {
@@ -37,7 +38,7 @@ export const runGateway = async (options: RunOptions = {}) => {
 			workingDirectory: config.bridge.workingDirectory,
 			allowedChatIds: config.allowedChatIds,
 		})
-		console.log('Bridge enabled, default CLI:', config.bridge.defaultCli)
+		void logToFile('info', 'bridge enabled', { defaultCli: config.bridge.defaultCli })
 
 	}
 
