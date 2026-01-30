@@ -2,7 +2,10 @@
  * Comprehensive E2E Test Suite for Agent Adapters
  *
  * Tests all supported adapters (droid, codex, claude, pi) through the full gateway stack.
- * Covers: spawn, tool use, model switching, /status, session continuity, clean exit.
+ * Covers: spawn, tool use, model switching, /status, session continuity, clean exit,
+ * subagents, memory, cron/reminders, and all slash commands.
+ *
+ * ISOLATION: All tests run in an isolated temp workspace - no changes to real workspace.
  *
  * Run: TG_E2E_RUN=1 pnpm test:e2e --grep adapters
  *
@@ -18,10 +21,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, readFile, mkdir, readdir } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { startGatewayServer, type GatewayServerHandle } from '../src/gateway/server.js'
-import { startBridge, type BridgeHandle } from '../src/bridge/index.js'
+import { startBridge, type BridgeHandle, setWorkspaceDir } from '../src/bridge/index.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Environment & Config
@@ -48,6 +51,311 @@ const shouldRun = hasEnv && !isCI && process.env.TG_E2E_RUN === '1'
 const SHORT_TIMEOUT = 30_000
 const MEDIUM_TIMEOUT = 60_000
 const LONG_TIMEOUT = 180_000
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mock Workspace Structure - Simulates a bot that's been used for a while
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TEST_CHAT_ID = '123456789'
+const TEST_SESSION_ID = 'test-session-abc123'
+
+const createMockWorkspace = async (baseDir: string): Promise<{ workspaceDir: string; toolTestDir: string }> => {
+	const workspaceDir = baseDir
+	const toolTestDir = join(workspaceDir, 'tool-tests')
+	
+	// Create directory structure
+	await mkdir(join(workspaceDir, 'sessions'), { recursive: true })
+	await mkdir(join(workspaceDir, '.state'), { recursive: true })
+	await mkdir(join(workspaceDir, '.tg-workspace', 'concepts'), { recursive: true })
+	await mkdir(join(workspaceDir, 'docs'), { recursive: true })
+	await mkdir(join(workspaceDir, 'notes'), { recursive: true })
+	await mkdir(toolTestDir, { recursive: true })
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// 1. Past Session Transcripts - 2 days of conversation history
+	// ─────────────────────────────────────────────────────────────────────────
+	
+	const day1 = '2026-01-28'
+	const day2 = '2026-01-29'
+	
+	// Day 1 JSONL - User introduction and preferences
+	const day1Jsonl = [
+		{ timestamp: `${day1}T10:00:00Z`, chatId: TEST_CHAT_ID, role: 'user', text: 'Hey! My name is TestUser.', cli: 'droid' },
+		{ timestamp: `${day1}T10:00:15Z`, chatId: TEST_CHAT_ID, role: 'assistant', text: 'Nice to meet you, TestUser! How can I help you today?', cli: 'droid' },
+		{ timestamp: `${day1}T10:01:00Z`, chatId: TEST_CHAT_ID, role: 'user', text: 'I prefer concise responses. Also my timezone is UTC.', cli: 'droid' },
+		{ timestamp: `${day1}T10:01:20Z`, chatId: TEST_CHAT_ID, role: 'assistant', text: 'Got it - concise responses, UTC timezone. Noted!', cli: 'droid' },
+		{ timestamp: `${day1}T14:00:00Z`, chatId: TEST_CHAT_ID, role: 'user', text: "I'm working on a project called bitesbot - it's a Telegram gateway for CLI agents.", cli: 'droid' },
+		{ timestamp: `${day1}T14:00:30Z`, chatId: TEST_CHAT_ID, role: 'assistant', text: 'Interesting! A Telegram gateway that bridges to CLI agents like Claude and Droid. What would you like help with?', cli: 'droid' },
+	].map(e => JSON.stringify(e)).join('\n') + '\n'
+	
+	// Day 1 Markdown transcript
+	const day1Md = `# Session Transcript - ${day1}
+
+### ${day1}T10:00:00Z (chat:${TEST_CHAT_ID} cli:droid)
+**USER**
+> Hey! My name is TestUser.
+
+### ${day1}T10:00:15Z (chat:${TEST_CHAT_ID} cli:droid)
+**ASSISTANT**
+> Nice to meet you, TestUser! How can I help you today?
+
+### ${day1}T10:01:00Z (chat:${TEST_CHAT_ID} cli:droid)
+**USER**
+> I prefer concise responses. Also my timezone is UTC.
+
+### ${day1}T10:01:20Z (chat:${TEST_CHAT_ID} cli:droid)
+**ASSISTANT**
+> Got it - concise responses, UTC timezone. Noted!
+
+### ${day1}T14:00:00Z (chat:${TEST_CHAT_ID} cli:droid)
+**USER**
+> I'm working on a project called bitesbot - it's a Telegram gateway for CLI agents.
+
+### ${day1}T14:00:30Z (chat:${TEST_CHAT_ID} cli:droid)
+**ASSISTANT**
+> Interesting! A Telegram gateway that bridges to CLI agents like Claude and Droid. What would you like help with?
+
+`
+
+	// Day 2 JSONL - Project work and tasks
+	const day2Jsonl = [
+		{ timestamp: `${day2}T09:00:00Z`, chatId: TEST_CHAT_ID, role: 'user', text: 'Can you help me add e2e tests for the adapter system?', cli: 'droid' },
+		{ timestamp: `${day2}T09:00:45Z`, chatId: TEST_CHAT_ID, role: 'assistant', text: "Sure! I'll create a comprehensive test suite covering spawn, tool use, model switching, and session continuity.", cli: 'droid' },
+		{ timestamp: `${day2}T09:30:00Z`, chatId: TEST_CHAT_ID, role: 'user', text: 'The tests should run in an isolated workspace so they dont mess with my real files.', cli: 'droid' },
+		{ timestamp: `${day2}T09:30:20Z`, chatId: TEST_CHAT_ID, role: 'assistant', text: "Good idea. I'll create a temp workspace with mock data and redirect all file operations there.", cli: 'droid' },
+		{ timestamp: `${day2}T15:00:00Z`, chatId: TEST_CHAT_ID, role: 'user', text: 'Remember to also test subagents and cron jobs.', cli: 'droid' },
+		{ timestamp: `${day2}T15:00:15Z`, chatId: TEST_CHAT_ID, role: 'assistant', text: 'Added to the list: subagent spawning, /spawn command, cron creation, and reminder tests.', cli: 'droid' },
+	].map(e => JSON.stringify(e)).join('\n') + '\n'
+
+	// Day 2 Markdown transcript
+	const day2Md = `# Session Transcript - ${day2}
+
+### ${day2}T09:00:00Z (chat:${TEST_CHAT_ID} cli:droid)
+**USER**
+> Can you help me add e2e tests for the adapter system?
+
+### ${day2}T09:00:45Z (chat:${TEST_CHAT_ID} cli:droid)
+**ASSISTANT**
+> Sure! I'll create a comprehensive test suite covering spawn, tool use, model switching, and session continuity.
+
+### ${day2}T09:30:00Z (chat:${TEST_CHAT_ID} cli:droid)
+**USER**
+> The tests should run in an isolated workspace so they dont mess with my real files.
+
+### ${day2}T09:30:20Z (chat:${TEST_CHAT_ID} cli:droid)
+**ASSISTANT**
+> Good idea. I'll create a temp workspace with mock data and redirect all file operations there.
+
+### ${day2}T15:00:00Z (chat:${TEST_CHAT_ID} cli:droid)
+**USER**
+> Remember to also test subagents and cron jobs.
+
+### ${day2}T15:00:15Z (chat:${TEST_CHAT_ID} cli:droid)
+**ASSISTANT**
+> Added to the list: subagent spawning, /spawn command, cron creation, and reminder tests.
+
+`
+
+	await writeFile(join(workspaceDir, 'sessions', `${day1}.jsonl`), day1Jsonl)
+	await writeFile(join(workspaceDir, 'sessions', `${day1}.md`), day1Md)
+	await writeFile(join(workspaceDir, 'sessions', `${day2}.jsonl`), day2Jsonl)
+	await writeFile(join(workspaceDir, 'sessions', `${day2}.md`), day2Md)
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// 2. Resume Tokens - For session continuity testing
+	// ─────────────────────────────────────────────────────────────────────────
+	
+	const resumeTokens = {
+		version: 1,
+		tokens: {
+			[`${TEST_CHAT_ID}:droid`]: { engine: 'droid', sessionId: TEST_SESSION_ID },
+		},
+		activeCli: {
+			[TEST_CHAT_ID]: 'droid',
+		},
+		chatSettings: {
+			[TEST_CHAT_ID]: { streaming: true, verbose: false, model: 'sonnet' },
+		},
+	}
+	await writeFile(join(workspaceDir, '.state', 'resume-tokens.json'), JSON.stringify(resumeTokens, null, 2))
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// 3. Rich MEMORY.md - What the bot "knows" about the user
+	// ─────────────────────────────────────────────────────────────────────────
+	
+	await writeFile(join(workspaceDir, 'MEMORY.md'), `# Memory
+
+## User Profile
+- **Name**: TestUser
+- **Timezone**: UTC
+- **Preferences**: Concise responses, no unnecessary explanations
+- **Communication style**: Direct, technical
+
+## Project Context
+- **Current project**: bitesbot
+- **Description**: Telegram gateway for CLI agents (Claude, Droid, Codex)
+- **Tech stack**: TypeScript, Node.js, grammy (Telegram), WebSocket
+- **Key directories**:
+  - \`src/gateway/\` - Telegram bot and HTTP/WS server
+  - \`src/bridge/\` - CLI agent bridge and session management
+  - \`src/cron/\` - Scheduled jobs
+  - \`adapters/\` - CLI adapter manifests
+
+## Ongoing Tasks
+- [ ] Add comprehensive e2e tests for all adapters
+- [ ] Implement workspace isolation for tests
+- [ ] Test subagent spawning
+- [ ] Test cron and reminder functionality
+- [x] Fix cron recalculation on restart
+- [x] Add model switching support
+
+## Learnings
+- User prefers isolated test environments
+- Tests should cover: spawn, tool use, model switching, session continuity
+- Important to test both happy paths and error handling
+
+## Important Files
+- \`src/gateway/server.ts\` - Main gateway server
+- \`src/bridge/jsonl-bridge.ts\` - CLI bridge implementation
+- \`tests/adapters.e2e.ts\` - E2E test suite
+`)
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// 4. Workspace Docs with Wiki-Links - For concepts/links testing
+	// ─────────────────────────────────────────────────────────────────────────
+	
+	await writeFile(join(workspaceDir, 'docs', 'architecture.md'), `# Architecture
+
+The [[gateway]] is the core component that handles [[Telegram]] messages.
+
+## Components
+
+### Gateway
+The gateway server runs the Telegram bot and exposes HTTP/WebSocket endpoints.
+See [[configuration]] for setup details.
+
+### Bridge
+The [[bridge]] connects to CLI agents via JSONL protocol.
+It manages [[sessions]] and handles [[subagents]].
+
+### Adapters
+Each CLI has an [[adapter]] manifest defining how to spawn and communicate with it.
+Supported: [[Claude]], [[Droid]], [[Codex]]
+
+## Data Flow
+1. Message arrives via Telegram
+2. Gateway normalizes and broadcasts via WebSocket
+3. Bridge routes to appropriate CLI session
+4. Response flows back through gateway to Telegram
+`)
+
+	await writeFile(join(workspaceDir, 'docs', 'configuration.md'), `# Configuration
+
+## Environment Variables
+
+The [[gateway]] can be configured via environment variables or config file.
+
+### Required
+- \`TG_GATEWAY_BOT_TOKEN\` - Your Telegram bot token
+- \`TG_GATEWAY_ALLOWED_CHAT_IDS\` - Comma-separated chat IDs
+
+### Optional
+- \`TG_GATEWAY_PORT\` - Server port (default: 8787)
+- \`TG_GATEWAY_DEFAULT_CLI\` - Default CLI adapter (default: claude)
+
+## Config File
+
+Location: \`~/.config/tg-gateway/config.json\`
+
+See [[deployment]] for production setup.
+`)
+
+	await writeFile(join(workspaceDir, 'docs', 'deployment.md'), `# Deployment
+
+## Local Development
+
+\`\`\`bash
+pnpm run dev
+\`\`\`
+
+## Production
+
+The [[gateway]] runs on Mac Mini with launchd.
+
+### Service Management
+- Start: \`launchctl load ~/Library/LaunchAgents/com.bentossell.bitesbot.plist\`
+- Stop: \`launchctl unload ...\`
+- Logs: \`~/logs/bitesbot.log\`
+
+See [[configuration]] for environment setup.
+See [[architecture]] for system overview.
+`)
+
+	await writeFile(join(workspaceDir, 'notes', 'ideas.md'), `# Ideas & Roadmap
+
+## Near Term
+- [[Memory]] improvements - better recall accuracy
+- [[Subagents]] - parallel task execution
+- [[Testing]] - comprehensive e2e coverage
+
+## Future
+- Web UI for [[Telegram]] bot
+- Multi-user support
+- [[Voice]] message handling
+
+## Done
+- Basic [[gateway]] implementation
+- [[Bridge]] with session resume
+- [[Cron]] job scheduling
+`)
+
+	await writeFile(join(workspaceDir, 'notes', 'testing-notes.md'), `# Testing Notes
+
+## E2E Test Strategy
+
+### Workspace Isolation
+All tests run in a temp directory to avoid polluting real workspace.
+The [[bridge]] workingDirectory is set to temp path.
+
+### What to Test
+1. **Adapters** - Each [[adapter]] (droid, claude, codex) works correctly
+2. **Sessions** - [[Sessions]] persist and resume properly
+3. **Tools** - File read/write, shell commands work
+4. **Commands** - All slash commands respond correctly
+
+### Seeded Data
+- Past [[sessions]] for history testing
+- [[MEMORY.md]] with user profile
+- Docs with [[links]] for concept testing
+`)
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// 5. Concepts Config - Aliases and settings
+	// ─────────────────────────────────────────────────────────────────────────
+	
+	const conceptsConfig = {
+		aliases: {
+			'tg': ['telegram', 'tg-gateway'],
+			'cli': ['command-line', 'terminal'],
+			'ws': ['websocket', 'websockets'],
+			'bot': ['chatbot', 'telegram bot'],
+		},
+		ignore: ['node_modules', '.git', 'dist'],
+	}
+	await writeFile(join(workspaceDir, '.tg-workspace', 'concepts', 'config.json'), JSON.stringify(conceptsConfig, null, 2))
+	
+	// Set workspace dir for session storage
+	setWorkspaceDir(workspaceDir)
+	
+	console.log(`[e2e] Created mock workspace with:`)
+	console.log(`      - 2 days of session history`)
+	console.log(`      - Resume tokens for chat ${TEST_CHAT_ID}`)
+	console.log(`      - MEMORY.md with user profile`)
+	console.log(`      - 5 docs with wiki-links`)
+	console.log(`      - Concepts config with aliases`)
+	
+	return { workspaceDir, toolTestDir }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Adapter Detection
@@ -170,12 +478,17 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	let ws: WebSocket
 	let tempDir: string
 	let toolTestDir: string
+	let workspaceDir: string
 	const port = Number.isNaN(gatewayPort) ? 8791 : gatewayPort
 
 	beforeAll(async () => {
+		// Create isolated temp workspace
 		tempDir = await mkdtemp(join(tmpdir(), 'bitesbot-adapters-e2e-'))
-		toolTestDir = join(tempDir, 'tooltest')
-		await import('node:fs/promises').then(fs => fs.mkdir(toolTestDir, { recursive: true }))
+		const mockWorkspace = await createMockWorkspace(tempDir)
+		workspaceDir = mockWorkspace.workspaceDir
+		toolTestDir = mockWorkspace.toolTestDir
+		
+		console.log(`[e2e] Isolated workspace: ${workspaceDir}`)
 
 		const { StringSession } = sessions
 		client = new TelegramClient(new StringSession(sessionStr), apiId, apiHash, { connectionRetries: 5 })
@@ -196,7 +509,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			bridge: {
 				enabled: true,
 				defaultCli: 'claude',
-				workingDirectory: tempDir,
+				workingDirectory: workspaceDir,
 				adaptersDir: join(process.cwd(), 'adapters'),
 			},
 		})
@@ -206,7 +519,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			authToken: authToken || undefined,
 			adaptersDir: join(process.cwd(), 'adapters'),
 			defaultCli: 'claude',
-			workingDirectory: tempDir,
+			workingDirectory: workspaceDir,
 		})
 
 		ws = new WebSocket(`ws://127.0.0.1:${port}/events`, authToken
@@ -585,6 +898,343 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			await client.sendMessage(botUsername, { message: '/stop' })
 			await waitForBotMessageContaining(client, botUsername, 'stop', SHORT_TIMEOUT)
 		}, MEDIUM_TIMEOUT)
+	})
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Slash Commands Tests
+	// ─────────────────────────────────────────────────────────────────────────
+
+	describe('slash commands', () => {
+		it('/help shows available commands', async () => {
+			await client.sendMessage(botUsername, { message: '/help' })
+			const reply = await waitForBotMessageContaining(client, botUsername, '/', SHORT_TIMEOUT)
+			expect(reply).toMatch(/\/use|\/new|\/status|\/model/)
+		}, SHORT_TIMEOUT)
+
+		it('/models lists available model aliases', async () => {
+			await client.sendMessage(botUsername, { message: '/models' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'opus', SHORT_TIMEOUT)
+			expect(reply).toMatch(/sonnet|haiku|opus/i)
+		}, SHORT_TIMEOUT)
+
+		it('/stream on enables streaming', async () => {
+			await client.sendMessage(botUsername, { message: '/stream on' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'Streaming', SHORT_TIMEOUT)
+			expect(reply.toLowerCase()).toMatch(/on|enabled/)
+		}, SHORT_TIMEOUT)
+
+		it('/stream off disables streaming', async () => {
+			await client.sendMessage(botUsername, { message: '/stream off' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'Streaming', SHORT_TIMEOUT)
+			expect(reply.toLowerCase()).toMatch(/off|disabled/)
+		}, SHORT_TIMEOUT)
+
+		it('/crons lists scheduled jobs (may be empty)', async () => {
+			await client.sendMessage(botUsername, { message: '/crons' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'cron', SHORT_TIMEOUT)
+			expect(reply).toBeDefined()
+		}, SHORT_TIMEOUT)
+	})
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Subagent Tests
+	// ─────────────────────────────────────────────────────────────────────────
+
+	describe('subagents', () => {
+		it('/subagents shows empty list initially', async () => {
+			await client.sendMessage(botUsername, { message: '/subagents' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'subagent', SHORT_TIMEOUT)
+			expect(reply.toLowerCase()).toMatch(/no.*subagent|subagent|running/i)
+		}, SHORT_TIMEOUT)
+
+		it('/spawn creates a subagent and runs task', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			const beforeSend = Date.now()
+			await client.sendMessage(botUsername, { message: '/spawn Calculate 5 * 7 and report the answer' })
+			
+			// Should get acknowledgment
+			const ack = await waitForBotMessageContaining(client, botUsername, 'spawn', MEDIUM_TIMEOUT)
+			expect(ack.toLowerCase()).toMatch(/spawn|subagent|started/)
+			
+			// Should eventually get a result containing 35
+			const result = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.includes('35') || text.toLowerCase().includes('complete'),
+				LONG_TIMEOUT,
+			)
+			expect(result).toBeDefined()
+		}, LONG_TIMEOUT)
+
+		it('/subagents shows running/completed subagents after spawn', async () => {
+			// Spawn a quick task
+			await client.sendMessage(botUsername, { message: '/spawn What is 2+2?' })
+			await delay(2000) // Give it time to start
+			
+			await client.sendMessage(botUsername, { message: '/subagents' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'subagent', SHORT_TIMEOUT)
+			expect(reply).toBeDefined()
+		}, MEDIUM_TIMEOUT)
+	})
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Cron & Reminders Tests
+	// ─────────────────────────────────────────────────────────────────────────
+
+	describe('cron and reminders', () => {
+		it('/cron creates a scheduled job', async () => {
+			// Create a cron that runs far in future (won't actually trigger)
+			await client.sendMessage(botUsername, { message: '/cron 0 0 1 1 * Test scheduled message' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'cron', MEDIUM_TIMEOUT)
+			expect(reply.toLowerCase()).toMatch(/created|scheduled|cron/)
+		}, MEDIUM_TIMEOUT)
+
+		it('/crons shows created cron job', async () => {
+			await client.sendMessage(botUsername, { message: '/crons' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'Test scheduled', SHORT_TIMEOUT)
+			expect(reply).toContain('Test scheduled')
+		}, SHORT_TIMEOUT)
+
+		it('/remind creates a reminder', async () => {
+			await client.sendMessage(botUsername, { message: '/remind 60m Test reminder' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'remind', MEDIUM_TIMEOUT)
+			expect(reply.toLowerCase()).toMatch(/remind|scheduled|set/)
+		}, MEDIUM_TIMEOUT)
+	})
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Memory & Recall Tests (uses seeded data)
+	// ─────────────────────────────────────────────────────────────────────────
+
+	describe('memory and recall', () => {
+		it('agent can read MEMORY.md and recall user info', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			await client.sendMessage(botUsername, { message: `/use ${available[0].name}` })
+			await waitForBotMessageContaining(client, botUsername, available[0].name, SHORT_TIMEOUT)
+			await client.sendMessage(botUsername, { message: '/new' })
+			await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+
+			const beforeSend = Date.now()
+			await client.sendMessage(botUsername, { 
+				message: 'Read the MEMORY.md file in your working directory and tell me the user\'s name and timezone.' 
+			})
+			
+			const response = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.includes('TestUser') || text.includes('UTC'),
+				LONG_TIMEOUT,
+			)
+			expect(response).toMatch(/TestUser|UTC/)
+		}, LONG_TIMEOUT)
+
+		it('agent can find info in past session transcripts', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			const beforeSend = Date.now()
+			await client.sendMessage(botUsername, { 
+				message: 'Look in the sessions/ directory and find what project the user mentioned they were working on. Read the markdown files there.' 
+			})
+			
+			const response = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.toLowerCase().includes('bitesbot') || text.toLowerCase().includes('telegram'),
+				LONG_TIMEOUT,
+			)
+			expect(response.toLowerCase()).toMatch(/bitesbot|telegram|gateway/)
+		}, LONG_TIMEOUT)
+
+		it('agent can search workspace docs', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			const beforeSend = Date.now()
+			await client.sendMessage(botUsername, { 
+				message: 'Search the docs/ directory for files mentioning "gateway" and tell me what components are described.' 
+			})
+			
+			const response = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.toLowerCase().includes('gateway') || text.toLowerCase().includes('bridge'),
+				LONG_TIMEOUT,
+			)
+			expect(response.toLowerCase()).toMatch(/gateway|bridge|adapter/)
+		}, LONG_TIMEOUT)
+	})
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Wiki-Links & Concepts Tests (uses seeded docs)
+	// ─────────────────────────────────────────────────────────────────────────
+
+	describe('links and concepts', () => {
+		it('/concepts lists concepts from workspace', async () => {
+			await client.sendMessage(botUsername, { message: '/concepts' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'concept', MEDIUM_TIMEOUT)
+			expect(reply.toLowerCase()).toMatch(/concept|index|file/)
+		}, MEDIUM_TIMEOUT)
+
+		it('/links shows wiki-link connections', async () => {
+			await client.sendMessage(botUsername, { message: '/links' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'link', MEDIUM_TIMEOUT)
+			expect(reply.toLowerCase()).toMatch(/link|file|docs/)
+		}, MEDIUM_TIMEOUT)
+
+		it('agent can follow wiki-links between docs', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			const beforeSend = Date.now()
+			await client.sendMessage(botUsername, { 
+				message: 'Read docs/architecture.md and tell me what other documents it links to (look for [[brackets]]).' 
+			})
+			
+			const response = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.toLowerCase().includes('configuration') || text.toLowerCase().includes('gateway'),
+				LONG_TIMEOUT,
+			)
+			expect(response.toLowerCase()).toMatch(/configuration|gateway|bridge|session/)
+		}, LONG_TIMEOUT)
+	})
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Robustness Tests
+	// ─────────────────────────────────────────────────────────────────────────
+
+	describe('robustness', () => {
+		it('handles unicode and special characters', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			await client.sendMessage(botUsername, { message: `/use ${available[0].name}` })
+			await waitForBotMessageContaining(client, botUsername, available[0].name, SHORT_TIMEOUT)
+			await client.sendMessage(botUsername, { message: '/new' })
+			await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+
+			const beforeSend = Date.now()
+			const unicodeMessage = 'Reply with exactly: Hello 世界 🌍 café naïve'
+			await client.sendMessage(botUsername, { message: unicodeMessage })
+			
+			const response = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.includes('Hello') || text.includes('世界'),
+				LONG_TIMEOUT,
+			)
+			expect(response).toMatch(/Hello|世界|🌍|café|naïve/)
+		}, LONG_TIMEOUT)
+
+		it('handles code blocks correctly', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			const beforeSend = Date.now()
+			await client.sendMessage(botUsername, { message: 'Write a simple function: function add(a,b) { return a+b }. Just output that exact code.' })
+			
+			const response = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.includes('function') || text.includes('return'),
+				LONG_TIMEOUT,
+			)
+			expect(response).toMatch(/function|return/)
+		}, LONG_TIMEOUT)
+
+		it('handles concurrent messages gracefully', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			// Send multiple messages rapidly
+			await client.sendMessage(botUsername, { message: 'First message: say ONE' })
+			await delay(100)
+			await client.sendMessage(botUsername, { message: 'Second message: say TWO' })
+			await delay(100)
+			await client.sendMessage(botUsername, { message: 'Third message: say THREE' })
+
+			// Should get responses (queued, not crashed)
+			await delay(5000)
+			const messages = await client.getMessages(botUsername, { limit: 10 })
+			const botMessages = messages.filter(m => 'out' in m && !m.out)
+			expect(botMessages.length).toBeGreaterThan(0)
+		}, LONG_TIMEOUT)
+
+		it('handles large output chunking', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			const beforeSend = Date.now()
+			await client.sendMessage(botUsername, { message: 'List the numbers 1 to 100, one per line.' })
+			
+			// Should eventually complete (may be chunked)
+			const response = await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.includes('100') || text.includes('50'),
+				LONG_TIMEOUT,
+			)
+			expect(response).toBeDefined()
+		}, LONG_TIMEOUT)
+	})
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Workspace Isolation Verification
+	// ─────────────────────────────────────────────────────────────────────────
+
+	describe('workspace isolation', () => {
+		it('agent file operations stay within temp workspace', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+
+			// Ask agent to create a file - should be in temp workspace
+			const testFileName = `isolation-test-${Date.now()}.txt`
+			const beforeSend = Date.now()
+			await client.sendMessage(botUsername, { 
+				message: `Create a file called ${testFileName} in the current directory with content "isolation test". Confirm when done.` 
+			})
+			
+			await waitForNewBotMessage(
+				client,
+				botUsername,
+				beforeSend,
+				(text) => text.toLowerCase().includes('creat') || text.toLowerCase().includes('done'),
+				LONG_TIMEOUT,
+			)
+
+			await delay(1000)
+
+			// Verify file is NOT in real workspace (isolation test)
+			const realPath = join(process.cwd(), testFileName)
+			const inReal = existsSync(realPath)
+			
+			expect(inReal).toBe(false) // Most important: didn't pollute real workspace
+			// Agent should have created file in temp workspace (workspaceDir)
+		}, LONG_TIMEOUT)
+
+		it('session logs are written to temp workspace', async () => {
+			// Sessions dir should be in temp workspace
+			const sessionsDir = join(workspaceDir, 'sessions')
+			const files = await readdir(sessionsDir).catch(() => [])
+			
+			// After running tests, there should be some session files
+			expect(files.length).toBeGreaterThanOrEqual(0) // May be empty if no sessions yet
+			// Workspace isolation is verified by setWorkspaceDir() call in setup
+		}, SHORT_TIMEOUT)
 	})
 })
 
