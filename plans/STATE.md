@@ -43,13 +43,12 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 - MEMORY.md native agent writes
 - Enforced memory recall workflow + deterministic boot context (merged)
 
-## Open PRs (7)
+## Open PRs (6)
 
 | # | Title | Branch |
 |---|-------|--------|
 | 30 | Agent-to-Agent Communications | `feat/agent-comms-final` |
 | 29 | Skills system for loading/managing agent skills | `feat/skills-system` |
-| 27 | Session Management - Registry, Lifecycle & History Tools | `feat/session-management-v2` |
 | 22 | Inflection Pi support | `feat/pi-support` |
 | 21 | OpenAI Codex support | `feat/codex-support` |
 | 20 | Telegram-like web UI | `claude/telegram-bot-web-ui-n51Rr` |
@@ -59,23 +58,21 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 
 ### Overlaps / Conflicts
 
-- **#29 vs #30 vs #27** — overlapping files in `src/bridge/session-registry.ts` and `src/bridge/sessions-tools.ts`; #29 includes cross-session messaging work that appears to overlap #30.
+- **#29 vs #30** — overlapping files in `src/bridge/session-registry.ts` and `src/bridge/sessions-tools.ts`; #29 appears to include #30.
 - **#22 vs #21** — #22 includes Codex work, making #21 redundant if #22 lands.
 
 ### Quick Wins / Suggested Order
 
-1. **#22 or #21** — choose #22 if we want Codex + Pi together; otherwise #21 only.
-2. **Session/bridge stack** — pick a primary thread (#29 or #27/#30) and drop/merge overlaps.
+1. **#29** — includes #30 changes (skills + agent comms); merge and then close #30 if redundant.
+2. **#22 or #21** — choose #22 if we want Codex + Pi together; otherwise #21 only.
 
 ## Recommended Merge Order (Assume All Today)
 
-1. #27 — Session management registry/lifecycle
-2. #30 — Agent-to-agent communications
-3. #29 — Skills system
-4. #21 — OpenAI Codex support
-5. #22 — Inflection Pi support
-6. #20 — Telegram-like web UI (deferred)
-7. #8 — Desktop wizard + workspace bootstrap (deferred)
+1. #29 — Skills system (includes #30 agent comms)
+2. #21 — OpenAI Codex support
+3. #22 — Inflection Pi support
+4. #20 — Telegram-like web UI (deferred)
+5. #8 — Desktop wizard + workspace bootstrap (deferred)
 
 ## Per-PR Knockout Steps
 
@@ -90,7 +87,7 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 ### High Priority (Core UX parity with Clawdbot)
 
 1. **Memory system** — Enforced memory workflow merged; wire up QMD search so the bot reliably recalls context across sessions
-2. **Session management** — Decide on session registry + agent comms (#27 vs #29/#30) for proper session lifecycle
+2. **Session management** — Registry PR (#27) closed; proceed with skills + agent comms (#29, includes #30)
 
 ### Medium Priority
 
