@@ -102,6 +102,26 @@ const parseSlashCommand = (text: string): { command: string; rest: string } | nu
 	return { command, rest: match[2]?.trim() ?? '' }
 }
 
+const resolveModelForCli = (cli: string, model?: string): string | undefined => {
+	if (!model) return undefined
+	const normalized = model.toLowerCase()
+
+	if (cli === 'codex') {
+		if (normalized.includes('claude') || normalized.includes('gemini')) return undefined
+		return model
+	}
+
+	if (cli === 'claude' || cli === 'droid') {
+		return normalized.includes('claude') ? model : undefined
+	}
+
+	if (cli.startsWith('gemini')) {
+		return normalized.includes('gemini') ? model : undefined
+	}
+
+	return model
+}
+
 const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> => {
 	const { text, chatId, manifests, defaultCli, sessionStore, workingDirectory, cronService, persistentStore } = opts
 	const trimmed = text.trim()
@@ -171,6 +191,11 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		if (session) {
 			session.terminate()
 			sessionStore.delete(chatId)
+		}
+		// Clear resume tokens so /new truly starts fresh
+		sessionStore.clearResumeTokens(chatId)
+		if (persistentStore) {
+			await persistentStore.clearResumeTokens(chatId)
 		}
 		return { handled: true, response: '💾 Session saved to memory. Starting fresh.' }
 	}
@@ -818,12 +843,12 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 				let prompt = task
 				// Deterministic boot context for fresh subagents
 				try {
-				const boot = await buildBootContext(workingDirectory, { mode: 'subagent' })
+					const boot = await buildBootContext(workingDirectory, { mode: 'subagent' })
 					if (boot) prompt = `${boot}\n\n${prompt}`
 				} catch {
 					// ignore
 				}
-				session.run(prompt, undefined, { model: opts.model })
+				session.run(prompt, undefined, { model: resolveModelForCli(cliName, opts.model) })
 			}
 			void run()
 		})
@@ -1316,7 +1341,11 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 		// Run with resume token if we have one
 		const settings = getSettings()
-		session.run(prompt, resumeToken, { model: settings.model })
+		const resolvedModel = resolveModelForCli(cliName, settings.model)
+		if (settings.model && !resolvedModel) {
+			console.log(`[jsonl-bridge] Ignoring incompatible model '${settings.model}' for ${cliName}`)
+		}
+		session.run(prompt, resumeToken, { model: resolvedModel })
 	}
 
 	const flushQueue = async (chatId: number | string) => {
@@ -1591,7 +1620,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					}
 				})
 
-				session.run(job.message, undefined, { model: modelOverride })
+				session.run(job.message, undefined, { model: resolveModelForCli(config.defaultCli, modelOverride) })
 			})
 		})
 	}

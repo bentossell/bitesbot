@@ -81,7 +81,6 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 3. Implement agreed improvements on the PR branch.
 4. Run validators: `pnpm run lint`, `pnpm run typecheck`, `pnpm test`.
 5. Push updates and move to the next PR.
-
 ## What's Next
 
 ### High Priority (Core UX parity with Clawdbot)

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { TelegramClient, sessions } from 'telegram'
 import WebSocket, { type RawData } from 'ws'
 import { setTimeout as delay } from 'node:timers/promises'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
@@ -20,6 +21,14 @@ const authToken = process.env.TG_E2E_AUTH_TOKEN
 const allowedChatIdEnv = process.env.TG_E2E_ALLOWED_CHAT_ID
 const gatewayPortRaw = process.env.TG_E2E_GATEWAY_PORT
 const hasDroid = existsSync(join(homedir(), '.local/bin/droid'))
+const hasCodex = (() => {
+	try {
+		const result = spawnSync('which', ['codex'])
+		return result.status === 0
+	} catch {
+		return false
+	}
+})()
 
 const botUsername = botUsernameRaw
 	? botUsernameRaw.startsWith('@') ? botUsernameRaw : `@${botUsernameRaw}`
@@ -405,6 +414,12 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
+	it.skipIf(!hasCodex)('/use codex switches CLI', async () => {
+		await client.sendMessage(botUsername, { message: '/use codex' })
+		const reply = await waitForBotMessageContaining(client, botUsername, 'codex', SHORT_TIMEOUT)
+		expect(reply).toBeDefined()
+	}, TIMEOUT_MS)
+
 	it('/cron list returns response', async () => {
 		await client.sendMessage(botUsername, { message: '/cron list' })
 		// Wait for any response (could be "No jobs" or a list)
@@ -467,16 +482,39 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 	it('sends a prompt and receives an AI response (claude)', async () => {
 		await client.sendMessage(botUsername, { message: '/use claude' })
 		await waitForBotMessageContaining(client, botUsername, 'claude', SHORT_TIMEOUT)
-
 		// Start fresh
 		await client.sendMessage(botUsername, { message: '/new' })
 		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
-		
+
 		const beforeSend = Date.now()
 		const testPrompt = 'What is 2+2? Reply with just the number.'
 		await client.sendMessage(botUsername, { message: testPrompt })
-		
-		// Wait for a response that contains "4" (the answer)
+
+		const response = await waitForNewBotMessage(
+			client,
+			botUsername,
+			beforeSend,
+			(text) => text.includes('4') && !text.includes('fresh') && !text.includes('CLI:'),
+			LONG_TIMEOUT,
+		)
+		expect(response).toContain('4')
+	}, LONG_TIMEOUT)
+
+	it.skipIf(!hasCodex)('sends a prompt and receives an AI response (codex)', async () => {
+		// Start fresh
+		await client.sendMessage(botUsername, { message: '/new' })
+		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+		await client.sendMessage(botUsername, { message: '/use codex' })
+		await waitForBotMessageContaining(client, botUsername, 'codex', SHORT_TIMEOUT)
+		await client.sendMessage(botUsername, { message: '/model codex' })
+		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
+		await client.sendMessage(botUsername, { message: '/new' })
+		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+
+		const beforeSend = Date.now()
+		const testPrompt = 'What is 2+2? Reply with just the number.'
+		await client.sendMessage(botUsername, { message: testPrompt })
+
 		const response = await waitForNewBotMessage(
 			client,
 			botUsername,

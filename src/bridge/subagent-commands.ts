@@ -165,9 +165,16 @@ export function formatSubagentAnnouncement(record: SubagentRunRecord): string {
 
 	if (record.result) {
 		// Truncate long results
-		const result = record.result.length > 2000 
-			? record.result.slice(0, 2000) + '\n...(truncated)'
-			: record.result
+		const MAX_RESULT_LEN = 2000
+		let result = record.result
+		if (record.result.length > MAX_RESULT_LEN) {
+			const marker = '\n...(truncated)...\n'
+			const headLen = Math.floor((MAX_RESULT_LEN - marker.length) * 0.6)
+			const tailLen = MAX_RESULT_LEN - marker.length - headLen
+			const head = record.result.slice(0, headLen)
+			const tail = record.result.slice(-tailLen)
+			result = `${head}${marker}${tail}`
+		}
 		lines.push(result)
 	} else if (record.error) {
 		lines.push(`Error: ${record.error}`)

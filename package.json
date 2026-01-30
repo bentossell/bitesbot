@@ -1,6 +1,7 @@
 {
 	"name": "tg-gateway",
 	"version": "0.1.0",
+	"packageManager": "pnpm@10.12.1",
 	"type": "module",
 	"description": "Portable Telegram gateway for CLI agents",
 	"bin": {
@@ -21,21 +22,21 @@
 		"gateway:daemon": "node dist/daemon/cli.js start --daemon",
 		"gateway:stop": "node dist/daemon/cli.js stop",
 		"gateway:status": "node dist/daemon/cli.js status",
-		"gateway:restart": "npm run gateway:stop; sleep 2; npm run gateway:daemon",
+		"gateway:restart": "pnpm run gateway:stop; sleep 2; pnpm run gateway:daemon",
 		"lint": "eslint .",
 		"typecheck": "tsc -p tsconfig.test.json --noEmit",
 		"test": "vitest run",
 		"test:unit": "vitest run --exclude '**/*.e2e.ts'",
 		"test:e2e": "vitest run --config vitest.e2e.config.ts",
 		"test:integration": "vitest run --grep 'integration|e2e'",
+		"docs:check": "tsx scripts/docs-check.ts",
 		"telegram:session": "tsx scripts/telegram-session.ts",
-		"precommit": "npm run typecheck && npm run lint && npm run test:unit",
+		"precommit": "pnpm run typecheck && pnpm run lint && pnpm run test:unit",
 		"prepare": "husky"
 	},
 	"dependencies": {
 		"commander": "^12.1.0",
 		"grammy": "^1.25.1",
-		"node-pty": "^1.1.0",
 		"telegram": "^2.26.22",
 		"ws": "^8.18.0",
 		"yaml": "^2.8.2"
