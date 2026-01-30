@@ -45,6 +45,7 @@ import {
 	type MemoryToolCall,
 } from '../memory/tools.js'
 import { createConceptsIndex, getRelatedFilesForTerms } from '../workspace/concepts-index.js'
+import { spawn } from 'node:child_process'
 import {
 	extractConceptsFromText,
 	getRepoNames,
@@ -190,6 +191,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 			'/stop - terminate the current session',
 			'/interrupt - stop current task and continue queue',
 			'/restart - restart the gateway',
+			'/update - build + restart the gateway',
 		]
 		return { handled: true, response: lines.join('\n') }
 	}
@@ -270,8 +272,26 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: `__INTERRUPT__:⏭️ Task interrupted.${queueMsg}`, async: true }
 	}
 
-	// /restart - gracefully restart the gateway (launchd will respawn)
 	const slashCommand = parseSlashCommand(trimmed)
+	if (slashCommand?.command === 'update') {
+		console.log('[jsonl-bridge] Update requested via /update command')
+		setTimeout(() => {
+			try {
+				const child = spawn('pnpm', ['run', 'gateway:restart:build'], {
+					cwd: workingDirectory,
+					detached: true,
+					stdio: 'ignore',
+					env: process.env,
+				})
+				child.unref()
+			} catch (err) {
+				console.error('[jsonl-bridge] Failed to spawn update process:', err)
+			}
+		}, 500)
+		return { handled: true, response: '⬆️ Updating gateway (build + restart)...' }
+	}
+
+	// /restart - gracefully restart the gateway (launchd will respawn)
 	if (slashCommand?.command === 'restart') {
 		console.log('[jsonl-bridge] Restart requested via /restart command')
 		// Schedule exit after sending response (give time for message to be sent)

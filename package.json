@@ -23,6 +23,7 @@
 		"gateway:stop": "node dist/daemon/cli.js stop",
 		"gateway:status": "node dist/daemon/cli.js status",
 		"gateway:restart": "pnpm run gateway:stop; sleep 2; pnpm run gateway:daemon",
+		"gateway:restart:build": "pnpm run build && pnpm run gateway:restart",
 		"lint": "eslint .",
 		"typecheck": "tsc -p tsconfig.test.json --noEmit",
 		"test": "vitest run",

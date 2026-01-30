@@ -40,8 +40,9 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 - QMD-based semantic search (planned, not fully wired)
 - Workspace links/concepts indexing
 - MEMORY.md native agent writes
+- Enforced memory recall workflow + deterministic boot context (merged)
 
-## Open PRs (12)
+## Open PRs (11)
 
 | # | Title | Branch |
 |---|-------|--------|
@@ -52,7 +53,6 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 | 26 | Cron: recalculate nextRunAtMs on restart | `fix/cron-recalculate-on-restart` |
 | 25 | Reminder support for cron system | `feat/reminders` |
 | 24 | Session tools for history + cross-chat messaging | `feat/session-tools` |
-| 23 | Enforced memory recall workflow + boot context | `feat/enforced-memory-workflow` |
 | 22 | Inflection Pi support | `feat/pi-support` |
 | 21 | OpenAI Codex support | `feat/codex-support` |
 | 20 | Telegram-like web UI | `claude/telegram-bot-web-ui-n51Rr` |
@@ -60,19 +60,17 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 
 ## Recommended Merge Order (Assume All Today)
 
-1. #23 — Enforced memory recall workflow + boot context
-2. #27 — Session management registry/lifecycle
-3. #24 — Session tools (history + cross-chat messaging)
-4. #25 — Reminder support for cron system
-5. #26 — Cron fix: recalculate nextRunAtMs on restart
-6. #30 — Agent-to-agent communications
-7. #29 — Skills system
-8. #28 — Workspace registry (per-agent isolated workspaces)
-9. #21 — OpenAI Codex support
-10. #22 — Inflection Pi support
-11. #31 — E2E test suite (already merged)
-12. #20 — Telegram-like web UI (deferred)
-13. #8 — Desktop wizard + workspace bootstrap (deferred)
+1. #27 — Session management registry/lifecycle
+2. #24 — Session tools (history + cross-chat messaging)
+3. #25 — Reminder support for cron system
+4. #26 — Cron fix: recalculate nextRunAtMs on restart
+5. #30 — Agent-to-agent communications
+6. #29 — Skills system
+7. #28 — Workspace registry (per-agent isolated workspaces)
+8. #21 — OpenAI Codex support
+9. #22 — Inflection Pi support
+10. #20 — Telegram-like web UI (deferred)
+11. #8 — Desktop wizard + workspace bootstrap (deferred)
 
 ## Per-PR Knockout Steps
 
@@ -86,7 +84,7 @@ We're focusing on the core bot UX first, not expanding to other app surfaces yet
 
 ### High Priority (Core UX parity with Clawdbot)
 
-1. **Memory system** — Merge enforced memory workflow (#23), wire up QMD search so the bot reliably recalls context across sessions
+1. **Memory system** — Enforced memory workflow merged; wire up QMD search so the bot reliably recalls context across sessions
 2. **Session management** — Land session registry + history tools (#27, #24) for proper session lifecycle
 3. **Reminders & scheduling** — Merge reminders PR (#25) + cron fix (#26) for proactive bot actions
 
