@@ -53,6 +53,8 @@ import {
 	saveConceptConfig,
 } from '../workspace/concepts.js'
 import { getRelativePath } from '../workspace/path-utils.js'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+import { type Skill, buildSkillContext, formatSkillInfo, formatSkillList, getDefaultSkillDirectories, scanAllSkills } from '../skills/index.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -85,6 +87,8 @@ type ParseCommandOptions = {
 	workingDirectory: string
 	cronService?: CronService
 	persistentStore?: PersistentSessionStore
+	skills?: Map<string, Skill>
+	reloadSkills?: () => Promise<Map<string, Skill>>
 }
 
 const parseSlashCommand = (text: string): { command: string; rest: string } | null => {
