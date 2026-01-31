@@ -32,3 +32,24 @@ export const logToFile = async (
 		console.error('[logging] Failed to write log entry')
 	}
 }
+
+/** Timestamp prefix for console logs (HH:MM:SS.mmm) */
+const ts = (): string => {
+	const now = new Date()
+	return now.toISOString().slice(11, 23)
+}
+
+/** Timestamped console.log */
+export const log = (...args: unknown[]): void => {
+	console.log(ts(), ...args)
+}
+
+/** Timestamped console.error */
+export const logError = (...args: unknown[]): void => {
+	console.error(ts(), ...args)
+}
+
+/** Timestamped console.warn */
+export const logWarn = (...args: unknown[]): void => {
+	console.warn(ts(), ...args)
+}

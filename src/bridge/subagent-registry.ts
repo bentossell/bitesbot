@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { log, logError } from '../logging/file.js'
 
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'error' | 'stopped'
 
@@ -97,6 +98,11 @@ export class SubagentRegistry {
 	}
 
 	markCompleted(runId: string, result: string): void {
+		const record = this.runs.get(runId)
+		// Pi debug logging
+		if (record?.cli === 'pi') {
+			log(`[pi-subagent] markCompleted runId=${runId} result_len=${result?.length ?? 0}`)
+		}
 		this.update(runId, {
 			status: 'completed',
 			endedAt: Date.now(),
@@ -105,6 +111,11 @@ export class SubagentRegistry {
 	}
 
 	markError(runId: string, error: string): void {
+		const record = this.runs.get(runId)
+		// Pi debug logging
+		if (record?.cli === 'pi') {
+			log(`[pi-subagent] markError runId=${runId} error=${error}`)
+		}
 		this.update(runId, {
 			status: 'error',
 			endedAt: Date.now(),
@@ -239,7 +250,7 @@ export const saveSubagentRegistry = async (): Promise<void> => {
 		const data = JSON.stringify(subagentRegistry.toJSON(), null, 2)
 		await writeFile(registryPath, data, 'utf-8')
 	} catch (err) {
-		console.error('[subagent-registry] Failed to save:', err)
+		logError('[subagent-registry] Failed to save:', err)
 	}
 }
 

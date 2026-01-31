@@ -4,6 +4,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
+import { log, logWarn, logError } from '../logging/file.js'
 
 const expandHome = (path: string): string => {
 	if (path.startsWith('~/')) {
@@ -214,16 +215,16 @@ export const loadAllManifests = async (
 		try {
 			const manifest = await loadManifest(join(adaptersDir, file))
 			if (!cliExists(manifest.command)) {
-				console.warn(`Skipping adapter '${manifest.name}': CLI '${manifest.command}' not found`)
+				logWarn(`Skipping adapter '${manifest.name}': CLI '${manifest.command}' not found`)
 				continue
 			}
 			// Resolve to absolute path for reliable spawning
 			const resolvedPath = resolveCommandPath(manifest.command)
 			manifest.command = resolvedPath
 			manifests.set(manifest.name, manifest)
-			console.log(`Loaded adapter '${manifest.name}' (${resolvedPath})`)
+			log(`Loaded adapter '${manifest.name}' (${resolvedPath})`)
 		} catch (err) {
-			console.error(`Failed to load manifest ${file}:`, err)
+			logError(`Failed to load manifest ${file}:`, err)
 		}
 	}
 

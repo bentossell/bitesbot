@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { CronJob, CronJobCreate, CronRunRecord, CronStore } from './types.js'
 import { loadCronStore, saveCronStore, generateId, findJob, updateJob, removeJob, addJob } from './store.js'
 import { calculateNextRun, isDue, formatSchedule, findMissedRuns } from './scheduler.js'
+import { log } from '../logging/file.js'
 import {
 	appendRunRecord,
 	createRunRecord,
@@ -55,7 +56,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 
 	async start(): Promise<void> {
 		this.store = await loadCronStore(this.storePath)
-		console.log(`[cron] Loaded ${this.store.jobs.length} jobs`)
+		log(`[cron] Loaded ${this.store.jobs.length} jobs`)
 
 		const now = new Date()
 		const missedJobIds: string[] = []
@@ -67,7 +68,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 			// Check if any runs were missed since last run
 			const missedRuns = findMissedRuns(job.schedule, job.lastRunAtMs, now)
 			if (missedRuns.length > 0) {
-				console.log(`[cron] Job "${job.name}" missed ${missedRuns.length} run(s) - will run now`)
+				log(`[cron] Job "${job.name}" missed ${missedRuns.length} run(s) - will run now`)
 				// Update lastRunAtMs to the most recent missed time so we don't re-trigger
 				this.store = updateJob(this.store, job.id, { lastRunAtMs: missedRuns[missedRuns.length - 1] })
 				missedJobIds.push(job.id)
@@ -77,7 +78,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 			// This ensures we don't miss runs due to stale/incorrect nextRunAtMs values
 			const nextRun = calculateNextRun(job.schedule, now)
 			if (nextRun && nextRun !== job.nextRunAtMs) {
-				console.log(`[cron] Recalculated next run for "${job.name}": ${new Date(nextRun).toISOString()}`)
+				log(`[cron] Recalculated next run for "${job.name}": ${new Date(nextRun).toISOString()}`)
 				this.store = updateJob(this.store, job.id, { nextRunAtMs: nextRun })
 			}
 		}
@@ -96,7 +97,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		}
 
 		this.timer = setInterval(() => this.check(), this.checkIntervalMs)
-		console.log(`[cron] Started, checking every ${this.checkIntervalMs / 1000}s`)
+		log(`[cron] Started, checking every ${this.checkIntervalMs / 1000}s`)
 	}
 
 	stop(): void {
@@ -104,7 +105,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 			clearInterval(this.timer)
 			this.timer = null
 		}
-		console.log('[cron] Stopped')
+		log('[cron] Stopped')
 	}
 
 	private async save(): Promise<void> {
@@ -174,7 +175,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		}
 		this.store = addJob(this.store, job)
 		await this.save()
-		console.log(`[cron] Added job: ${job.name} (${job.id})${job.sessionTarget === 'isolated' ? ' [isolated]' : ''}`)
+		log(`[cron] Added job: ${job.name} (${job.id})${job.sessionTarget === 'isolated' ? ' [isolated]' : ''}`)
 		return job
 	}
 
@@ -183,7 +184,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		if (!job) return false
 		this.store = removeJob(this.store, id)
 		await this.save()
-		console.log(`[cron] Removed job: ${job.name} (${id})`)
+		log(`[cron] Removed job: ${job.name} (${id})`)
 		return true
 	}
 

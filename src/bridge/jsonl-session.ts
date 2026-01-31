@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { createInterface, type Interface } from 'node:readline'
 import type { CLIManifest } from './manifest.js'
 import { loadEnvFile } from './env-file.js'
+import { log, logError } from '../logging/file.js'
 
 export type SessionState = 'active' | 'suspended' | 'completed'
 
@@ -102,6 +103,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	private _lastActivity: Date = new Date()
 	private _resumeToken?: ResumeToken
 	private _lastText: string = ''
+	private _completedEmitted: boolean = false
 	private pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
 
 	constructor(
@@ -150,7 +152,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		options?: { model?: string }
 	): void {
 		if (this.process) {
-			console.log(`[jsonl-session] Process already running for ${this.chatId}`)
+			log(`[jsonl-session] Process already running for ${this.chatId}`)
 			return
 		}
 
@@ -223,8 +225,8 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			args.push(prompt)
 		}
 
-		console.log(`[jsonl-session] Spawning: ${this.manifest.command} ${args.slice(0, -1).join(' ')} "<prompt>"`)
-		console.log(`[jsonl-session] Working dir: ${this.workingDir}`)
+		log(`[jsonl-session] Spawning: ${this.manifest.command} ${args.slice(0, -1).join(' ')} "<prompt>"`)
+		log(`[jsonl-session] Working dir: ${this.workingDir}`)
 
 		this.process = spawn(this.manifest.command, args, {
 			cwd: this.workingDir,
@@ -237,6 +239,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 
 		this._state = 'active'
 		this._lastActivity = new Date()
+		this._completedEmitted = false
 
 		this.readline = createInterface({ input: this.process.stdout! })
 		this.readline.on('line', (line) => this.handleLine(line))
@@ -244,12 +247,12 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		this.process.stderr?.on('data', (data) => {
 			const text = data.toString().trim()
 			if (text) {
-				console.log(`[jsonl-session] stderr: ${text}`)
+				log(`[jsonl-session] stderr: ${text}`)
 			}
 		})
 
 		this.process.on('exit', (code) => {
-			console.log(`[jsonl-session] Process exited with code ${code}`)
+			log(`[jsonl-session] Process exited with code ${code}`)
 			this._state = 'completed'
 			this.process = null
 			this.readline = null
@@ -257,7 +260,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		})
 
 		this.process.on('error', (err) => {
-			console.error(`[jsonl-session] Process error:`, err)
+			logError(`[jsonl-session] Process error:`, err)
 			this.emit('event', { type: 'error', message: err.message })
 		})
 	}
@@ -271,7 +274,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			const event = JSON.parse(line) as JsonlEvent
 			this.translateEvent(event)
 		} catch {
-			console.log(`[jsonl-session] Non-JSON line: ${line.slice(0, 100)}`)
+			log(`[jsonl-session] Non-JSON line: ${line.slice(0, 100)}`)
 		}
 	}
 
@@ -550,12 +553,27 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				break
 			}
 
-			// Pi: turn end signals completion
+			// Pi: turn end signals completion (but only emit once per run)
 			case 'turn_end': {
-				if (event.message?.role === 'assistant') {
+				if (event.message?.role === 'assistant' && !this._completedEmitted) {
 					const text = extractPiText(event.message)
 					if (text) this._lastText = text
 					const sessionId = this._resumeToken?.sessionId || 'unknown'
+					this._completedEmitted = true
+					this.emit('event', {
+						type: 'completed',
+						sessionId,
+						answer: this._lastText,
+						isError: false,
+					})
+				}
+				break
+			}
+			// Pi: agent end signals the session is complete (fallback if turn_end didn't fire)
+			case 'agent_end': {
+				if (this._lastText && !this._completedEmitted) {
+					const sessionId = this._resumeToken?.sessionId || 'unknown'
+					this._completedEmitted = true
 					this.emit('event', {
 						type: 'completed',
 						sessionId,

@@ -1,5 +1,5 @@
-import { createWriteStream } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { createWriteStream, createReadStream } from 'node:fs'
+import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
@@ -8,10 +8,16 @@ import { spawn } from 'node:child_process'
 import type { ReadableStream } from 'node:stream/web'
 import type { Bot } from 'grammy'
 import type { Attachment } from '../protocol/types.js'
+import FormData from 'form-data'
+import { log } from '../logging/file.js'
 
 const TRANSCRIPTS_DIR = path.join(homedir(), 'files', 'transcripts')
 const MEDIA_DIR = path.join(homedir(), 'files', 'media')
 const MAX_INLINE_CHARS = 2000 // inline if transcript is shorter than this
+
+// Transcription provider: 'local' uses local whisper CLI, 'openai' uses OpenAI API
+const TRANSCRIPTION_PROVIDER = process.env.TRANSCRIPTION_PROVIDER || 'local'
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
 
 export type TranscriptResult = {
 	text: string
@@ -52,14 +58,9 @@ export const downloadTelegramFile = async (
 }
 
 /**
- * Transcribe audio file using Whisper
+ * Transcribe audio file using local Whisper CLI
  */
-export const transcribeAudio = async (audioPath: string): Promise<TranscriptResult> => {
-	await mkdir(TRANSCRIPTS_DIR, { recursive: true })
-
-	const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-	const transcriptPath = path.join(TRANSCRIPTS_DIR, `${timestamp}-voice.txt`)
-
+const transcribeLocal = async (audioPath: string, transcriptPath: string): Promise<string> => {
 	return new Promise((resolve, reject) => {
 		// Use openai-whisper CLI (installed via brew)
 		const whisper = spawn('/opt/homebrew/bin/whisper', [
@@ -86,17 +87,11 @@ export const transcribeAudio = async (audioPath: string): Promise<TranscriptResu
 			const whisperOutput = path.join(TRANSCRIPTS_DIR, `${basename}.txt`)
 
 			try {
-				const { readFile, rename } = await import('node:fs/promises')
+				const { rename } = await import('node:fs/promises')
 				// Rename to our preferred format
 				await rename(whisperOutput, transcriptPath)
 				const text = await readFile(transcriptPath, 'utf-8')
-				const trimmed = text.trim()
-
-				resolve({
-					text: trimmed,
-					path: transcriptPath,
-					isInline: trimmed.length <= MAX_INLINE_CHARS,
-				})
+				resolve(text.trim())
 			} catch (err) {
 				reject(err)
 			}
@@ -104,6 +99,84 @@ export const transcribeAudio = async (audioPath: string): Promise<TranscriptResu
 
 		whisper.on('error', reject)
 	})
+}
+
+/**
+ * Transcribe audio file using OpenAI Whisper API
+ */
+const transcribeOpenAI = async (audioPath: string, transcriptPath: string): Promise<string> => {
+	if (!OPENAI_API_KEY) {
+		throw new Error('OPENAI_API_KEY not set - cannot use OpenAI transcription')
+	}
+
+	const form = new FormData()
+	form.append('file', createReadStream(audioPath))
+	form.append('model', 'whisper-1')
+	form.append('language', 'en')
+
+	// Use form-data's submit() since fetch doesn't handle form-data streams properly
+	return new Promise((resolve, reject) => {
+		form.submit({
+			protocol: 'https:',
+			host: 'api.openai.com',
+			path: '/v1/audio/transcriptions',
+			headers: {
+				'Authorization': `Bearer ${OPENAI_API_KEY}`,
+			}
+		}, async (err, res) => {
+			if (err) {
+				reject(err)
+				return
+			}
+
+			let data = ''
+			res.on('data', (chunk: Buffer) => data += chunk.toString())
+			res.on('end', async () => {
+				try {
+					if (res.statusCode !== 200) {
+						reject(new Error(`OpenAI transcription failed: ${res.statusCode} ${data}`))
+						return
+					}
+
+					const result = JSON.parse(data) as { text: string }
+					const text = result.text.trim()
+
+					// Save transcript to file
+					await writeFile(transcriptPath, text, 'utf-8')
+					resolve(text)
+				} catch (parseErr) {
+					reject(parseErr)
+				}
+			})
+			res.on('error', reject)
+		})
+	})
+}
+
+/**
+ * Transcribe audio file using configured provider (local or openai)
+ */
+export const transcribeAudio = async (audioPath: string): Promise<TranscriptResult> => {
+	await mkdir(TRANSCRIPTS_DIR, { recursive: true })
+
+	const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+	const transcriptPath = path.join(TRANSCRIPTS_DIR, `${timestamp}-voice.txt`)
+
+	const provider = TRANSCRIPTION_PROVIDER
+	log(`[media] Transcribing with provider: ${provider}`)
+
+	let text: string
+	if (provider === 'openai') {
+		text = await transcribeOpenAI(audioPath, transcriptPath)
+	} else {
+		text = await transcribeLocal(audioPath, transcriptPath)
+	}
+
+	return {
+		text,
+		path: transcriptPath,
+		isInline: text.length <= MAX_INLINE_CHARS,
+	}
 }
 
 /**
@@ -131,17 +204,17 @@ export const processVoiceAttachment = async (
 	bot: Bot,
 	attachment: Attachment
 ): Promise<string> => {
-	console.log(`[media] Processing ${attachment.type} attachment...`)
+	log(`[media] Processing ${attachment.type} attachment...`)
 
 	// Download the file (if not already available)
 	const extension = getExtension(attachment)
 	const audioPath = attachment.localPath ?? await downloadTelegramFile(bot, attachment.fileId, extension)
-	console.log(`[media] Downloaded to ${audioPath}`)
+	log(`[media] Downloaded to ${audioPath}`)
 
 	// Transcribe
-	console.log(`[media] Transcribing...`)
+	log(`[media] Transcribing...`)
 	const result = await transcribeAudio(audioPath)
-	console.log(`[media] Transcribed: ${result.text.length} chars`)
+	log(`[media] Transcribed: ${result.text.length} chars`)
 
 	// Format the prompt injection
 	if (result.isInline) {

@@ -12,7 +12,7 @@ import { syncSessionToMemory } from './memory-sync.js'
 import { maybeAutoFlushSessionToMemory } from './auto-memory-flush.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
 import type { CronJob } from '../cron/types.js'
-import { logToFile } from '../logging/file.js'
+import { logToFile, log, logError, logWarn } from '../logging/file.js'
 import {
 	subagentRegistry,
 	saveSubagentRegistry,
@@ -142,7 +142,7 @@ const spawnDetached = (command: string, args: string[], cwd: string) => {
 		env: process.env,
 	})
 	child.on('error', (err) => {
-		console.error(`[jsonl-bridge] Failed to spawn ${command}:`, err)
+		logError(`[jsonl-bridge] Failed to spawn ${command}:`, err)
 	})
 	child.unref()
 }
@@ -268,10 +268,10 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		try {
 			const result = await syncSessionToMemory(workingDirectory)
 			if (result.written) {
-				console.log(`[jsonl-bridge] Synced ${result.entries} messages to memory`)
+				log(`[jsonl-bridge] Synced ${result.entries} messages to memory`)
 			}
 		} catch (err) {
-			console.error('[jsonl-bridge] Failed to sync memory on /new:', err)
+			logError('[jsonl-bridge] Failed to sync memory on /new:', err)
 		}
 		
 		sessionStore.clearResumeToken(chatId, currentCli)
@@ -323,7 +323,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 
 	const slashCommand = parseSlashCommand(trimmed)
 	if (slashCommand?.command === 'update') {
-		console.log('[jsonl-bridge] Update requested via /update command')
+		log('[jsonl-bridge] Update requested via /update command')
 		if (isUpdateLocked()) {
 			const remainingMs = UPDATE_LOCK_TTL_MS - (Date.now() - (updateLockAt ?? 0))
 			const remainingMin = Math.max(1, Math.ceil(remainingMs / 60000))
@@ -338,7 +338,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 				spawnDetached('pnpm', ['run', script], workingDirectory)
 			} catch (err) {
 				releaseUpdateLock()
-				console.error('[jsonl-bridge] Failed to spawn update process:', err)
+				logError('[jsonl-bridge] Failed to spawn update process:', err)
 			}
 		}, 500)
 		return { handled: true, response: '⬆️ Updating gateway (build + restart)...' }
@@ -346,19 +346,19 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 
 	// /restart - gracefully restart the gateway (launchd will respawn)
 	if (slashCommand?.command === 'restart') {
-		console.log('[jsonl-bridge] Restart requested via /restart command')
+		log('[jsonl-bridge] Restart requested via /restart command')
 		if (!isLaunchdEnv()) {
 			setTimeout(() => {
 				try {
 					spawnDetached('pnpm', ['run', 'gateway:restart'], workingDirectory)
 				} catch (err) {
-					console.error('[jsonl-bridge] Failed to spawn restart process:', err)
+					logError('[jsonl-bridge] Failed to spawn restart process:', err)
 				}
 			}, 200)
 		}
 		// Schedule exit after sending response (give time for message to be sent)
 		setTimeout(() => {
-			console.log('[jsonl-bridge] Exiting for restart...')
+			log('[jsonl-bridge] Exiting for restart...')
 			process.kill(process.pid, 'SIGTERM')
 		}, 500)
 		return { handled: true, response: '🔄 Restarting gateway...' }
@@ -666,7 +666,7 @@ const sendToGateway = async (
 			}).catch(() => {})
 		}
 	} catch (err) {
-		console.error(`[jsonl-bridge] Failed to send message:`, err)
+		logError(`[jsonl-bridge] Failed to send message:`, err)
 		const message = err instanceof Error ? err.message : 'unknown error'
 		void logToFile('error', 'bridge send failed', { error: message, chatId }).catch(() => {})
 	}
@@ -725,7 +725,7 @@ const sendFileToGateway = async (
 		}
 		return true
 	} catch (err) {
-		console.error(`[jsonl-bridge] Failed to send file:`, err)
+		logError(`[jsonl-bridge] Failed to send file:`, err)
 		const message = err instanceof Error ? err.message : 'unknown error'
 		void logToFile('error', 'bridge send file failed', { error: message, chatId, filePath }).catch(() => {})
 		return false
@@ -876,7 +876,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 	const fallbackNote = usedFallback ? ` (fallback from ${requestedCli})` : ''
 	await send(chatId, `🚀 Spawned: ${displayName}\n   CLI: ${cliName}${fallbackNote}\n   Task: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''}`)
 
-	console.log(`[jsonl-bridge] Spawning subagent ${record.runId} with ${cliName}: "${task.slice(0, 50)}..."`)
+	log(`[jsonl-bridge] Spawning subagent ${record.runId} with ${cliName}: "${task.slice(0, 50)}..."`)
 
 	// Run subagent in background on the Subagent lane (fire-and-forget)
 	void enqueueCommandInLane(CommandLane.Subagent, async () => {
@@ -892,7 +892,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 				switch (evt.type) {
 					case 'started': {
 						subagentRegistry.markRunning(record.runId, evt.sessionId)
-						console.log(`[jsonl-bridge] Subagent ${record.runId} started: ${evt.sessionId}`)
+						log(`[jsonl-bridge] Subagent ${record.runId} started: ${evt.sessionId}`)
 						if (!startedAnnounced) {
 							startedAnnounced = true
 							const startedLabel = label || `Subagent #${record.runId.slice(0, 8)}`
@@ -908,7 +908,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 						break
 
 					case 'completed':
-						console.log(`[jsonl-bridge] Subagent ${record.runId} completed`)
+						log(`[jsonl-bridge] Subagent ${record.runId} completed`)
 						subagentRegistry.markCompleted(record.runId, evt.answer || lastText)
 						if (opts.logMessage) {
 							loggedFinal = true
@@ -926,7 +926,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 						break
 
 					case 'error':
-						console.log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
+						log(`[jsonl-bridge] Subagent ${record.runId} error: ${evt.message}`)
 						subagentRegistry.markError(record.runId, evt.message)
 						if (opts.logMessage && !loggedFinal) {
 							loggedFinal = true
@@ -943,7 +943,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 			})
 
 			session.on('exit', (code) => {
-				console.log(`[jsonl-bridge] Subagent ${record.runId} exited with code ${code}`)
+				log(`[jsonl-bridge] Subagent ${record.runId} exited with code ${code}`)
 				// If exited without completing, mark as error
 				const current = subagentRegistry.get(record.runId)
 				if (current && current.status === 'running') {
@@ -987,11 +987,11 @@ const spawnSubagent = async (opts: SpawnSubagentOptions): Promise<void> => {
 export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> => {
 	// Initialize lane-based command queue with default concurrency
 	initDefaultLanes()
-	console.log('[jsonl-bridge] Initialized command lanes (Main: 1, Subagent: 4, Cron: 1)')
+	log('[jsonl-bridge] Initialized command lanes (Main: 1, Subagent: 4, Cron: 1)')
 
 	const manifests = await loadAllManifests(config.adaptersDir)
 	if (manifests.size === 0) {
-		console.warn('[jsonl-bridge] No CLI adapters found in', config.adaptersDir)
+		logWarn('[jsonl-bridge] No CLI adapters found in', config.adaptersDir)
 	}
 
 	const sessionStore = createSessionStore()
@@ -1001,22 +1001,22 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const conceptsIndex = createConceptsIndex(config.workingDirectory)
 	const repoNames = await getRepoNames(config.workingDirectory)
 	
-	console.log(`[jsonl-bridge] Loaded ${persistentStore.resumeTokens.size} resume tokens`)
+	log(`[jsonl-bridge] Loaded ${persistentStore.resumeTokens.size} resume tokens`)
 
 	// Load subagent registry from disk
 	const subagentCount = await loadSubagentRegistry()
 	if (subagentCount > 0) {
-		console.log(`[jsonl-bridge] Restored ${subagentCount} subagent records`)
+		log(`[jsonl-bridge] Restored ${subagentCount} subagent records`)
 	}
 
 	// Sync session logs to memory on startup (gateway restart)
 	try {
 		const result = await syncSessionToMemory(config.workingDirectory)
 		if (result.written) {
-			console.log(`[jsonl-bridge] Synced ${result.entries} messages to memory on startup`)
+			log(`[jsonl-bridge] Synced ${result.entries} messages to memory on startup`)
 		}
 	} catch (err) {
-		console.error('[jsonl-bridge] Failed to sync memory on startup:', err)
+		logError('[jsonl-bridge] Failed to sync memory on startup:', err)
 	}
 
 	const buildRelatedContext = async (text: string): Promise<string | null> => {
@@ -1034,7 +1034,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			return `Related files:\n${relatedFiles.map(file => `- ${file}`).join('\n')}`
 		} catch (err) {
 			const message = err instanceof Error ? err.message : 'unknown error'
-			console.error('[jsonl-bridge] Failed to build related context:', message)
+			logError('[jsonl-bridge] Failed to build related context:', message)
 			return null
 		}
 	}
@@ -1059,7 +1059,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	// Initialize from config if available so MCP can spawn before any Telegram message
 	let primaryChatId: number | string | null = config.allowedChatIds?.[0] ?? null
 	if (primaryChatId) {
-		console.log(`[jsonl-bridge] Primary chat initialized from config: ${primaryChatId}`)
+		log(`[jsonl-bridge] Primary chat initialized from config: ${primaryChatId}`)
 	}
 
 	type MessageContext = {
@@ -1098,7 +1098,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const pendingResults = formatPendingResultsForInjection(chatId, resumeToken?.sessionId)
 		if (pendingResults) {
 			prompt = `${pendingResults}\n\n${prompt}`
-			console.log(`[jsonl-bridge] Injected subagent results into prompt`)
+			log(`[jsonl-bridge] Injected subagent results into prompt`)
 		}
 
 		const recallRequired =
@@ -1118,7 +1118,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				}
 			} catch (err) {
 				const message = err instanceof Error ? err.message : 'unknown error'
-				console.error('[jsonl-bridge] Failed to build memory recall:', message)
+				logError('[jsonl-bridge] Failed to build memory recall:', message)
 			}
 		}
 
@@ -1146,12 +1146,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		void persistentStore.logMessage(chatId, logRole, originalPrompt, undefined, cliName)
 		const manifest = manifests.get(cliName)
 		if (!manifest) {
-			console.log(`[jsonl-bridge] CLI '${cliName}' not found`)
+			log(`[jsonl-bridge] CLI '${cliName}' not found`)
 			await send(chatId, `CLI '${cliName}' not found. Check adapters directory.`)
 			return
 		}
 
-		console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Starting ${cliName} session for ${chatId}${resumeToken ? ' (resuming)' : ''}`)
+		log(`[jsonl-bridge] [${Date.now() - t0}ms] Starting ${cliName} session for ${chatId}${resumeToken ? ' (resuming)' : ''}`)
 
 		// Start typing immediately (before CLI spawns)
 		let typingInterval: ReturnType<typeof setInterval> | null = null
@@ -1221,7 +1221,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		session.on('event', async (evt: BridgeEvent) => {
 			switch (evt.type) {
 				case 'started':
-					console.log(`[jsonl-bridge] [${Date.now() - t0}ms] Session started: ${evt.sessionId}`)
+					log(`[jsonl-bridge] [${Date.now() - t0}ms] Session started: ${evt.sessionId}`)
 					currentSessionId = evt.sessionId
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 					break
@@ -1323,7 +1323,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						if (!assistantSpawn && getSettings().streaming) {
 							await flushStreamBuffer(true)
 						}
-						console.log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
+						log(`[jsonl-bridge] Completed: ${evt.sessionId}`)
 						sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 						void persistentStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
 
@@ -1352,7 +1352,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 						// Send any files that were queued during streaming
 						for (const file of pendingFiles) {
-							console.log(`[jsonl-bridge] Sending queued file attachment: ${file.path}`)
+							log(`[jsonl-bridge] Sending queued file attachment: ${file.path}`)
 							const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
 							if (!sent) {
 								await send(chatId, `❌ Failed to send file: ${file.path}`)
@@ -1381,7 +1381,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 									break
 								} catch (err) {
 									const message = err instanceof Error ? err.message : 'unknown error'
-									console.error('[jsonl-bridge] Memory tool failed:', message)
+									logError('[jsonl-bridge] Memory tool failed:', message)
 								}
 							}
 
@@ -1430,7 +1430,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 									break
 								} catch (err) {
 									const message = err instanceof Error ? err.message : 'unknown error'
-									console.error('[jsonl-bridge] Session tool failed:', message)
+									logError('[jsonl-bridge] Session tool failed:', message)
 								}
 							}
 
@@ -1449,7 +1449,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						for (const file of files) {
 							// Skip if already sent from pendingFiles
 							if (pendingFiles.some(f => f.path === file.path)) continue
-							console.log(`[jsonl-bridge] Sending file attachment: ${file.path}`)
+							log(`[jsonl-bridge] Sending file attachment: ${file.path}`)
 							const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
 							if (!sent) {
 								await send(chatId, `❌ Failed to send file: ${file.path}`)
@@ -1508,7 +1508,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 		session.on('exit', (code) => {
 			stopTypingLoop()
-			console.log(`[jsonl-bridge] Session exited with code ${code}`)
+			log(`[jsonl-bridge] Session exited with code ${code}`)
 			if (context?.cronJobId && !cronMarked) {
 				cronService.markComplete(context.cronJobId, `Process exited with code ${code}`)
 				cronMarked = true
@@ -1522,7 +1522,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const settings = getSettings()
 		const resolvedModel = resolveModelForCli(cliName, settings.model)
 		if (settings.model && !resolvedModel) {
-			console.log(`[jsonl-bridge] Ignoring incompatible model '${settings.model}' for ${cliName}`)
+			log(`[jsonl-bridge] Ignoring incompatible model '${settings.model}' for ${cliName}`)
 		}
 		session.run(prompt, resumeToken, { model: resolvedModel })
 	}
@@ -1530,7 +1530,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const flushQueue = async (chatId: number | string) => {
 		const next = sessionStore.dequeue(chatId)
 		if (!next) return
-		console.log(`[jsonl-bridge] Flushing queued message for ${chatId}`)
+		log(`[jsonl-bridge] Flushing queued message for ${chatId}`)
 		await processMessage(chatId, next.text, next.context)
 	}
 
@@ -1600,7 +1600,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			primaryChatId = chatId
 		}
 
-		console.log(`[jsonl-bridge] Received from ${chatId}: "${prompt.slice(0, 50)}..."`)
+		log(`[jsonl-bridge] Received from ${chatId}: "${prompt.slice(0, 50)}..."`)
 
 		// Handle commands (always process immediately)
 		const cmdResult = await parseCommand({
@@ -1643,14 +1643,14 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			// Handle /interrupt or /skip - send response then flush queue
 			if ('async' in cmdResult && cmdResult.response.startsWith('__INTERRUPT__:')) {
 				const userMessage = cmdResult.response.slice('__INTERRUPT__:'.length)
-				console.log(`[jsonl-bridge] Task interrupted: ${text}`)
+				log(`[jsonl-bridge] Task interrupted: ${text}`)
 				await send(chatId, userMessage)
 				// Flush the queue to process next message
 				void flushQueue(chatId)
 				return
 			}
 			
-			console.log(`[jsonl-bridge] Command handled: ${text}`)
+			log(`[jsonl-bridge] Command handled: ${text}`)
 			await send(chatId, cmdResult.response)
 			return
 		}
@@ -1658,7 +1658,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		// Check for natural language spawn requests (e.g., "spawn a subagent to...")
 		const naturalSpawn = parseNaturalSpawnRequest(prompt)
 		if (naturalSpawn) {
-			console.log(`[jsonl-bridge] Natural language spawn detected: "${naturalSpawn.task.slice(0, 50)}..."`)
+			log(`[jsonl-bridge] Natural language spawn detected: "${naturalSpawn.task.slice(0, 50)}..."`)
 			const activeCli = persistentStore.getActiveCli(chatId) || sessionStore.getActiveCli(chatId) || config.defaultCli
 			const settings = persistentStore.getChatSettings(chatId)
 			void spawnSubagent({
@@ -1713,24 +1713,24 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	})
 
 	ws.on('error', (err) => {
-		console.error('[jsonl-bridge] WebSocket error:', err.message)
+		logError('[jsonl-bridge] WebSocket error:', err.message)
 	})
 
 	ws.on('close', () => {
-		console.log('[jsonl-bridge] Disconnected from gateway')
+		log('[jsonl-bridge] Disconnected from gateway')
 	})
 
 	ws.on('open', () => {
-		console.log('[jsonl-bridge] Connected to gateway')
+		log('[jsonl-bridge] Connected to gateway')
 	})
 
 	const runCronJobMain = async (job: CronJob): Promise<void> => {
 		if (!primaryChatId) {
-			console.log('[jsonl-bridge] Cron job due but no primary chat set')
+			log('[jsonl-bridge] Cron job due but no primary chat set')
 			return
 		}
 		const targetChatId = primaryChatId
-		console.log(`[jsonl-bridge] Cron job triggered: ${job.name}`)
+		log(`[jsonl-bridge] Cron job triggered: ${job.name}`)
 		await send(targetChatId, `⏰ Cron: ${job.name}`)
 		void handleMessage({
 			id: `cron-${Date.now()}`,
@@ -1745,7 +1745,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 	const runCronJobIsolated = async (job: CronJob): Promise<void> => {
 		if (!primaryChatId) {
-			console.log('[jsonl-bridge] Cron isolated job due but no primary chat set')
+			log('[jsonl-bridge] Cron isolated job due but no primary chat set')
 			return
 		}
 		const targetChatId = primaryChatId

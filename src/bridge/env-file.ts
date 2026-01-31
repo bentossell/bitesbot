@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { log, logWarn } from '../logging/file.js'
 
 /**
  * Parse a shell-style env file (supports `export KEY=value` and `KEY=value`)
@@ -11,7 +12,7 @@ export const parseEnvFile = (filePath: string): Record<string, string> => {
 	try {
 		content = readFileSync(filePath, 'utf-8')
 	} catch (err) {
-		console.warn(`[env-file] Failed to read ${filePath}:`, (err as Error).message)
+		logWarn(`[env-file] Failed to read ${filePath}:`, (err as Error).message)
 		return env
 	}
 
@@ -68,7 +69,7 @@ export const loadEnvFile = (filePath?: string): NodeJS.ProcessEnv => {
 
 	const keyCount = Object.keys(cachedEnv).length
 	if (keyCount > 0) {
-		console.log(`[env-file] Loaded ${keyCount} env vars from ${filePath}`)
+		log(`[env-file] Loaded ${keyCount} env vars from ${filePath}`)
 	}
 
 	return { ...process.env, ...cachedEnv }
