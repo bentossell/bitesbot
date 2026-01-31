@@ -6,6 +6,7 @@ import {
 	createSessionStore,
 	type SessionStore,
 	type BridgeEvent,
+	type ToolExecutor,
 } from './jsonl-session.js'
 import { createPersistentSessionStore, type PersistentSessionStore } from './session-store.js'
 import { syncSessionToMemory } from './memory-sync.js'
@@ -1146,7 +1147,59 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			}
 		}
 
-		const session = new JsonlSession(chatId, manifest, config.workingDirectory, { envFile: config.envFile })
+		const runPiToolExecutor: ToolExecutor | undefined = cliName === 'pi'
+			? async ({ toolName, args }) => {
+				const payload = JSON.stringify({ tool: toolName, ...args })
+				if (toolName.startsWith('memory_')) {
+					if (!config.memory?.enabled) {
+						return { isError: true, error: 'Memory tools disabled' }
+					}
+					const call = parseMemoryToolCall(payload)
+					if (!call) {
+						return { isError: true, error: `Invalid memory tool call: ${toolName}` }
+					}
+					const result = await runMemoryTool(call, config.memory as MemoryConfig)
+					return { result, isError: false }
+				}
+				if (toolName.startsWith('sessions_')) {
+					const call = parseSessionToolCall(payload)
+					if (!call) {
+						return { isError: true, error: `Invalid session tool call: ${toolName}` }
+					}
+					const result = await runSessionTool(call, {
+						workspaceDir: config.workingDirectory,
+						currentChatId: chatId,
+						sendToChat: send,
+						spawnSubagent: async ({ chatId: targetChatId, task, label, cli }) => {
+							const activeCli = persistentStore.getActiveCli(targetChatId) || sessionStore.getActiveCli(targetChatId) || config.defaultCli
+							const settings = persistentStore.getChatSettings(targetChatId)
+							const record = await spawnSubagentInternal({
+								chatId: targetChatId,
+								task,
+								label,
+								cli: cli || activeCli,
+								explicitCli: Boolean(cli),
+								manifests,
+								defaultCli: config.defaultCli,
+								subagentFallbackCli: config.subagentFallbackCli,
+								workingDirectory: config.workingDirectory,
+								memory: config.memory,
+								model: settings.model,
+								envFile: config.envFile,
+								send,
+								logMessage: persistentStore.logMessage,
+								parentSessionId: currentSessionId,
+							})
+							return record ? { runId: record.runId } : null
+						},
+					})
+					return { result, isError: false }
+				}
+				return { isError: true, error: `Unsupported tool: ${toolName}` }
+			}
+			: undefined
+
+		const session = new JsonlSession(chatId, manifest, config.workingDirectory, { envFile: config.envFile, toolExecutor: runPiToolExecutor })
 		sessionStore.set(session)
 
 		// Get chat settings dynamically (allows mid-session changes via /stream and /verbose)

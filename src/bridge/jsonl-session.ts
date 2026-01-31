@@ -92,6 +92,18 @@ export type JsonlSessionEvents = {
 	exit: [number]
 }
 
+export type ToolExecutorResult = {
+	result?: unknown
+	isError?: boolean
+	error?: string
+}
+
+export type ToolExecutor = (call: {
+	toolCallId: string
+	toolName: string
+	args: Record<string, unknown>
+}) => Promise<ToolExecutorResult>
+
 export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	readonly id: string
 	readonly chatId: number | string
@@ -110,7 +122,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		chatId: number | string,
 		private manifest: CLIManifest,
 		private workingDir: string,
-		options?: { isSubagent?: boolean; envFile?: string }
+		options?: { isSubagent?: boolean; envFile?: string; toolExecutor?: ToolExecutor }
 	) {
 		super()
 		this.id = `${chatId}-${Date.now()}`
@@ -118,9 +130,11 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 		this.cli = manifest.name
 		this.isSubagent = options?.isSubagent ?? false
 		this.envFile = options?.envFile
+		this.toolExecutor = options?.toolExecutor
 	}
 
 	private envFile?: string
+	private toolExecutor?: ToolExecutor
 
 	get state(): SessionState {
 		return this._state
@@ -238,8 +252,10 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			stdio: ['pipe', 'pipe', 'pipe'],
 		})
 
-		// Close stdin to signal we're done sending input
-		this.process.stdin?.end()
+		// Close stdin to signal we're done sending input (keep open for Pi tool results)
+		if (!(this.cli === 'pi' && this.toolExecutor)) {
+			this.process.stdin?.end()
+		}
 
 		this._state = 'active'
 		this._lastActivity = new Date()
@@ -279,6 +295,42 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			this.translateEvent(event)
 		} catch {
 			log(`[jsonl-session] Non-JSON line: ${line.slice(0, 100)}`)
+		}
+	}
+
+	private async handlePiToolExecution(event: Extract<PiEvent, { type: 'tool_execution_start' }>): Promise<void> {
+		if (!this.toolExecutor) return
+		if (!this.process?.stdin || !this.process.stdin.writable) {
+			log(`[pi-session] Tool executor unavailable (stdin closed) tool=${event.toolName} id=${event.toolCallId}`)
+			return
+		}
+		log(`[pi-session] Executing tool=${event.toolName} id=${event.toolCallId}`)
+		try {
+			const result = await this.toolExecutor({
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args ?? {},
+			})
+			const payload = {
+				type: 'tool_execution_end',
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				result: result.error ? { error: result.error } : result.result,
+				isError: Boolean(result.isError || result.error),
+			}
+			log(`[pi-session] Tool result id=${event.toolCallId} isError=${payload.isError}`)
+			this.process.stdin.write(`${JSON.stringify(payload)}\n`)
+		} catch (err) {
+			const message = err instanceof Error ? err.message : 'unknown error'
+			log(`[pi-session] Tool execution error id=${event.toolCallId} error=${message}`)
+			const payload = {
+				type: 'tool_execution_end',
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				result: { error: message },
+				isError: true,
+			}
+			this.process.stdin.write(`${JSON.stringify(payload)}\n`)
 		}
 	}
 
@@ -472,6 +524,7 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 
 			// Pi: tool execution
 			case 'tool_execution_start':
+				log(`[pi-session] tool_execution_start tool=${event.toolName} id=${event.toolCallId}`)
 				this.pendingTools.set(event.toolCallId, { name: event.toolName, input: event.args ?? {} })
 				this.emit('event', {
 					type: 'tool_start',
@@ -479,9 +532,11 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 					name: event.toolName,
 					input: event.args ?? {},
 				})
+				void this.handlePiToolExecution(event)
 				break
 
 			case 'tool_execution_end': {
+				log(`[pi-session] tool_execution_end id=${event.toolCallId} isError=${event.isError} pendingBefore=${this.pendingTools.size}`)
 				this.pendingTools.delete(event.toolCallId)
 				const preview =
 					typeof event.result === 'string'
@@ -559,11 +614,16 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 
 			// Pi: turn end signals completion (but only emit once per run)
 			case 'turn_end': {
-				if (event.message?.role === 'assistant' && !this._completedEmitted) {
+				const role = event.message?.role
+				const hasPendingTools = this.pendingTools.size > 0
+				log(`[pi-session] turn_end role=${role} pendingTools=${hasPendingTools} completedEmitted=${this._completedEmitted} lastText_len=${this._lastText.length}`)
+				// Only emit completion on assistant turn_end with no pending tools
+				if (role === 'assistant' && !this._completedEmitted && !hasPendingTools) {
 					const text = extractPiText(event.message)
 					if (text) this._lastText = text
 					const sessionId = this._resumeToken?.sessionId || 'unknown'
 					this._completedEmitted = true
+					log(`[pi-session] Emitting completion from turn_end sessionId=${sessionId}`)
 					this.emit('event', {
 						type: 'completed',
 						sessionId,
@@ -575,13 +635,25 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			}
 			// Pi: agent end signals the session is complete (fallback if turn_end didn't fire)
 			case 'agent_end': {
-				if (this._lastText && !this._completedEmitted) {
+				const hasPendingTools = this.pendingTools.size > 0
+				log(`[pi-session] agent_end completedEmitted=${this._completedEmitted} pendingTools=${hasPendingTools} lastText_len=${this._lastText.length}`)
+				// Emit completion on agent_end as fallback (even if lastText is empty)
+				if (!this._completedEmitted && !hasPendingTools) {
 					const sessionId = this._resumeToken?.sessionId || 'unknown'
 					this._completedEmitted = true
+					// Extract text from agent_end messages if available and lastText is empty
+					if (!this._lastText && event.messages?.length) {
+						const lastAssistantMsg = [...event.messages].reverse().find(m => m.role === 'assistant')
+						if (lastAssistantMsg) {
+							const text = extractPiText(lastAssistantMsg)
+							if (text) this._lastText = text
+						}
+					}
+					log(`[pi-session] Emitting completion from agent_end sessionId=${sessionId}`)
 					this.emit('event', {
 						type: 'completed',
 						sessionId,
-						answer: this._lastText,
+						answer: this._lastText || '(no response)',
 						isError: false,
 					})
 				}
