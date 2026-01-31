@@ -231,7 +231,6 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 			'/model <alias|id> - set model for next session',
 			'/models - list available model aliases',
 			'/stream on|off - toggle streaming responses',
-			'/verbose on|off - toggle tool output',
 			'/spawn <task> - run a subagent task',
 			'/subagents - list subagent runs',
 			'/cron <expr> <message> - schedule a cron job',

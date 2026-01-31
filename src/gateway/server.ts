@@ -181,8 +181,8 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			{ command: 'model', description: 'Switch AI model (opus/sonnet/haiku)' },
 			{ command: 'use', description: 'Switch CLI (claude/droid)' },
 			{ command: 'stream', description: 'Toggle streaming output' },
-			{ command: 'verbose', description: 'Toggle tool output' },
 			{ command: 'cron', description: 'Manage scheduled jobs' },
+			// Note: /verbose is a hidden command (not shown in menu)
 		])
 	} catch {
 		botInfo = undefined
