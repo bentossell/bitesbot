@@ -1,3 +1,5 @@
+import type { NormalizedResponse } from './normalized.js'
+
 export const PROTOCOL_VERSION = 1
 
 export type Attachment = {
@@ -34,6 +36,7 @@ export type InlineButton = {
 export type OutboundMessage = {
 	chatId: number | string
 	text?: string
+	structured?: NormalizedResponse
 	photoUrl?: string
 	documentUrl?: string
 	/** Local file path to send as document attachment */

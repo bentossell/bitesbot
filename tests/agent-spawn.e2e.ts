@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, expect } from 'vitest'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { e2eTest } from './e2e-checkpoint.js'
 
 const DROID_PATH = join(homedir(), '.local/bin/droid')
 const TIMEOUT_MS = 60_000
@@ -27,7 +28,7 @@ const hasPi = (() => {
 })()
 describe.skipIf(!hasDroid)('agent-spawn e2e', () => {
 	describe('droid CLI', () => {
-		it('spawns and receives session_start event', async () => {
+		e2eTest('spawns and receives session_start event', async () => {
 			const events: Record<string, unknown>[] = []
 			let proc: ChildProcess | null = null
 
@@ -87,7 +88,7 @@ describe.skipIf(!hasDroid)('agent-spawn e2e', () => {
 			expect(hasSessionStart).toBe(true)
 		}, TIMEOUT_MS + 5000)
 
-		it('completes simple math and returns answer', async () => {
+		e2eTest('completes simple math and returns answer', async () => {
 			let answer: string | null = null
 			let proc: ChildProcess | null = null
 
@@ -147,7 +148,7 @@ describe.skipIf(!hasDroid)('agent-spawn e2e', () => {
 })
 
 describe.skipIf(!hasCodex)('codex CLI e2e', () => {
-	it('spawns and receives thread.started event', async () => {
+	e2eTest('spawns and receives thread.started event', async () => {
 		const events: Record<string, unknown>[] = []
 		let proc: ChildProcess | null = null
 
@@ -201,7 +202,7 @@ describe.skipIf(!hasCodex)('codex CLI e2e', () => {
 		expect(hasThreadStart).toBe(true)
 	}, TIMEOUT_MS + 5000)
 
-	it('completes simple math and returns answer via item.completed', async () => {
+	e2eTest('completes simple math and returns answer via item.completed', async () => {
 		let answer: string | null = null
 		let proc: ChildProcess | null = null
 
@@ -265,7 +266,7 @@ describe.skipIf(!hasCodex)('codex CLI e2e', () => {
 })
 
 describe.skipIf(!hasPi)('pi CLI e2e', () => {
-	it('spawns and receives session header', async () => {
+	e2eTest('spawns and receives session header', async () => {
 		const events: Record<string, unknown>[] = []
 		let proc: ChildProcess | null = null
 
@@ -312,7 +313,7 @@ describe.skipIf(!hasPi)('pi CLI e2e', () => {
 		expect(hasSession).toBe(true)
 	}, TIMEOUT_MS + 5000)
 
-	it('completes simple math and returns answer', async () => {
+	e2eTest('completes simple math and returns answer', async () => {
 		let answer = ''
 		let proc: ChildProcess | null = null
 
@@ -376,15 +377,15 @@ describe.skipIf(!hasPi)('pi CLI e2e', () => {
 })
 
 describe('agent-spawn e2e (skipped - missing deps)', () => {
-	it.skipIf(hasDroid)('requires droid CLI', () => {
+	e2eTest.skipIf(hasDroid)('requires droid CLI', () => {
 		console.log(`Droid exists: ${hasDroid}`)
 		console.log('Skipping e2e tests - install droid CLI at ~/.local/bin/droid')
 	})
-	it.skipIf(hasCodex)('requires codex CLI', () => {
+	e2eTest.skipIf(hasCodex)('requires codex CLI', () => {
 		console.log(`Codex exists: ${hasCodex}`)
 		console.log('Skipping codex e2e tests - install codex CLI')
 	})
-	it.skipIf(hasPi)('requires pi CLI', () => {
+	e2eTest.skipIf(hasPi)('requires pi CLI', () => {
 		console.log(`Pi exists: ${hasPi}`)
 		console.log('Skipping pi e2e tests - install pi CLI')
 	})

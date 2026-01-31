@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, expect, beforeAll, afterAll, vi } from 'vitest'
 import { TelegramClient, sessions } from 'telegram'
 import WebSocket, { type RawData } from 'ws'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -9,8 +9,10 @@ import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { startGatewayServer, type GatewayServerHandle } from '../src/gateway/server.js'
 import { startBridge, type BridgeHandle, setWorkspaceDir } from '../src/bridge/index.js'
+import { JsonlSession } from '../src/bridge/jsonl-session.js'
 import { setSubagentRegistryPath } from '../src/bridge/subagent-registry.js'
 import type { GatewayEvent } from '../src/protocol/types.js'
+import { acquireE2eLock, e2eTest } from './e2e-checkpoint.js'
 
 const apiId = Number(process.env.TG_E2E_API_ID ?? '')
 const apiHash = process.env.TG_E2E_API_HASH ?? ''
@@ -64,6 +66,8 @@ const shouldRun = hasEnv && !isCI && process.env.TG_E2E_RUN === '1'
 const TIMEOUT_MS = 60_000
 const SHORT_TIMEOUT = 20_000
 const LONG_TIMEOUT = 60_000 // For tests that involve AI responses
+const SUBAGENT_STEP_TIMEOUT = 120_000
+const POLL_DELAY_MS = 2000
 
 const waitForGatewayEvent = <T extends GatewayEvent['type']>(
 	ws: WebSocket,
@@ -100,7 +104,7 @@ const waitForBotMessage = async (client: TelegramClient, bot: string, expectedTe
 		const messages = await client.getMessages(bot, { limit: 5 })
 		const match = messages.find((msg) => 'message' in msg && msg.message === expectedText && msg.out === false)
 		if (match) return match
-		await delay(1000)
+		await delay(POLL_DELAY_MS)
 	}
 	throw new Error(`Timeout waiting for bot reply: ${expectedText}`)
 }
@@ -111,7 +115,7 @@ const waitForBotMessageContaining = async (client: TelegramClient, bot: string, 
 		const messages = await client.getMessages(bot, { limit: 5 })
 		const match = messages.find((msg) => 'message' in msg && msg.message?.includes(substring) && msg.out === false)
 		if (match && 'message' in match) return match.message
-		await delay(1000)
+		await delay(POLL_DELAY_MS)
 	}
 	throw new Error(`Timeout waiting for bot reply containing: ${substring}`)
 }
@@ -142,7 +146,7 @@ const waitForNewBotMessage = async (
 				return msg.message
 			}
 		}
-		await delay(1000)
+		await delay(POLL_DELAY_MS)
 	}
 	throw new Error('Timeout waiting for new bot message matching predicate')
 }
@@ -171,10 +175,12 @@ const waitForNewBotMessageWithMeta = async (
 				return { text: msg.message, timestamp: msgDate, id: msg.id }
 			}
 		}
-		await delay(1000)
+		await delay(POLL_DELAY_MS)
 	}
 	throw new Error('Timeout waiting for new bot message with meta')
 }
+
+type SwitchCli = (cli: string, options?: { force?: boolean }) => Promise<string | undefined>
 
 const formatDate = (date: Date) => date.toISOString().split('T')[0]
 
@@ -212,6 +218,7 @@ const runSubagentConcurrencyTest = async (
 	client: TelegramClient,
 	botUsername: string,
 	cli: string,
+	switchCli: SwitchCli,
 ): Promise<void> => {
 	const token = `${Date.now()}`
 	const label = `Subagent-${token}`
@@ -219,8 +226,7 @@ const runSubagentConcurrencyTest = async (
 		? `Write 12 bullet points about shipping a feature. Use 3 section headings with 4 bullets each. Each bullet must be at least 10 words, and finish with sub-${token}:42.`
 		: `Write 36 bullet points about shipping a feature. Use 6 section headings with 6 bullets each. Each bullet must be at least 16 words, and finish with a 6-line poem. End with sub-${token}:42.`
 
-	await client.sendMessage(botUsername, { message: `/use ${cli}` })
-	await waitForBotMessage(client, botUsername, `Switched to ${cli}.`, SHORT_TIMEOUT)
+	await switchCli(cli)
 
 	const spawnPrompt = `/spawn --label "${label}" "${taskBody}"`
 	await client.sendMessage(botUsername, { message: spawnPrompt })
@@ -229,7 +235,7 @@ const runSubagentConcurrencyTest = async (
 		botUsername,
 		Date.now(),
 		(text) => text.includes(`🚀 Spawned: ${label}`),
-		LONG_TIMEOUT,
+		SUBAGENT_STEP_TIMEOUT,
 	)
 	if (!spawnAck.text.includes(`🚀 Spawned: ${label}`)) {
 		throw new Error('Subagent spawn acknowledgment missing label')
@@ -240,7 +246,7 @@ const runSubagentConcurrencyTest = async (
 		botUsername,
 		spawnAck.timestamp,
 		(text) => text.includes(`🔄 Started: ${label}`),
-		LONG_TIMEOUT,
+		SUBAGENT_STEP_TIMEOUT,
 	)
 	if (!startedMsg.text.includes(`🔄 Started: ${label}`)) {
 		throw new Error('Subagent start message missing label')
@@ -253,14 +259,14 @@ const runSubagentConcurrencyTest = async (
 		botUsername,
 		startedMsg.timestamp,
 		(text) => text.includes(`main-${token}:6`),
-		LONG_TIMEOUT,
+		SUBAGENT_STEP_TIMEOUT,
 	)
 	const subagentDone = await waitForNewBotMessageWithMeta(
 		client,
 		botUsername,
 		followReply.timestamp,
 		(text) => text.includes(`✅ ${label}`),
-		LONG_TIMEOUT,
+		SUBAGENT_STEP_TIMEOUT,
 	)
 	if (!followReply.text.includes(`main-${token}:6`)) {
 		throw new Error('Main response missing expected token')
@@ -279,11 +285,11 @@ const runModelSwitchTest = async (
 	cli: string,
 	first: { alias: string; modelId: string },
 	second: { alias: string; modelId: string },
+	switchCli: SwitchCli,
 ): Promise<void> => {
-	await client.sendMessage(botUsername, { message: `/use ${cli}` })
-	await waitForBotMessageContaining(client, botUsername, cli, SHORT_TIMEOUT)
+	await switchCli(cli)
 
-	const logSpy = vi.spyOn(console, 'log')
+	const runSpy = vi.spyOn(JsonlSession.prototype, 'run')
 	try {
 		const beforeModel = Date.now()
 		await client.sendMessage(botUsername, { message: `/model ${first.alias}` })
@@ -299,7 +305,7 @@ const runModelSwitchTest = async (
 		await client.sendMessage(botUsername, { message: '/new' })
 		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
 
-		logSpy.mockClear()
+		runSpy.mockClear()
 		const beforeFirst = Date.now()
 		await client.sendMessage(botUsername, { message: 'What is 1+1? Reply with just the number.' })
 		await waitForNewBotMessage(
@@ -309,8 +315,12 @@ const runModelSwitchTest = async (
 			(text) => text.includes('2') && !text.includes('fresh') && !text.includes('CLI:'),
 			LONG_TIMEOUT,
 		)
-		const firstLogs = logSpy.mock.calls.map((call) => call.join(' ')).join('\n')
-		expect(firstLogs).toContain(`--model ${first.modelId}`)
+		const firstRunIndex = runSpy.mock.calls.findIndex((call, index) => {
+			const instance = runSpy.mock.instances[index] as JsonlSession | undefined
+			const options = call[2] as { model?: string } | undefined
+			return instance?.cli === cli && options?.model === first.modelId
+		})
+		expect(firstRunIndex).toBeGreaterThanOrEqual(0)
 
 		const beforeSecondModel = Date.now()
 		await client.sendMessage(botUsername, { message: `/model ${second.alias}` })
@@ -326,7 +336,7 @@ const runModelSwitchTest = async (
 		await client.sendMessage(botUsername, { message: '/new' })
 		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
 
-		logSpy.mockClear()
+		runSpy.mockClear()
 		const beforeSecond = Date.now()
 		await client.sendMessage(botUsername, { message: 'What is 5+5? Reply with just the number.' })
 		await waitForNewBotMessage(
@@ -336,10 +346,14 @@ const runModelSwitchTest = async (
 			(text) => text.includes('10') && !text.includes('fresh') && !text.includes('CLI:'),
 			LONG_TIMEOUT,
 		)
-		const secondLogs = logSpy.mock.calls.map((call) => call.join(' ')).join('\n')
-		expect(secondLogs).toContain(`--model ${second.modelId}`)
+		const secondRunIndex = runSpy.mock.calls.findIndex((call, index) => {
+			const instance = runSpy.mock.instances[index] as JsonlSession | undefined
+			const options = call[2] as { model?: string } | undefined
+			return instance?.cli === cli && options?.model === second.modelId
+		})
+		expect(secondRunIndex).toBeGreaterThanOrEqual(0)
 	} finally {
-		logSpy.mockRestore()
+		runSpy.mockRestore()
 	}
 }
 
@@ -351,14 +365,39 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 	let bridge: BridgeHandle
 	let ws: WebSocket
 	let tempDir: string
+	let mediaDir: string
 	let chatId: number | string
+	let releaseLock: (() => void) | null = null
+	let currentCli: string | null = null
 	const port = Number.isNaN(gatewayPort) ? 8790 : gatewayPort
 
+	const switchCli: SwitchCli = async (cli, options = {}) => {
+		if (!options.force && currentCli === cli) return undefined
+		await client.sendMessage(botUsername, { message: `/use ${cli}` })
+		const reply = await waitForBotMessageContaining(client, botUsername, cli, SHORT_TIMEOUT)
+		currentCli = cli
+		return reply
+	}
+
+	const ensureChatId = async (): Promise<number | string> => {
+		if (chatId) return chatId
+		const probeText = `e2e chat id ${Date.now()}`
+		const inboundPromise = waitForGatewayEvent(ws, 'message.received', (e) => e.payload.text === probeText, TIMEOUT_MS)
+		await client.sendMessage(botUsername, { message: probeText })
+		const inbound = await inboundPromise
+		chatId = inbound.payload.chatId
+		return chatId
+	}
+
 	beforeAll(async () => {
+		releaseLock = await acquireE2eLock()
+		currentCli = null
 		tempDir = await mkdtemp(join(tmpdir(), 'bitesbot-e2e-'))
 		setWorkspaceDir(tempDir)
 		setSubagentRegistryPath(join(tempDir, '.state', 'subagent-registry.json'))
 		await seedWorkspacePlaceholders(tempDir)
+		mediaDir = join(tempDir, 'media-fixtures')
+		await mkdir(mediaDir, { recursive: true })
 		
 		const { StringSession } = sessions
 		client = new TelegramClient(new StringSession(sessionStr), apiId, apiHash, { connectionRetries: 5 })
@@ -414,10 +453,11 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		if (server) await server.close()
 		if (client) await client.disconnect()
 		if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {})
+		releaseLock?.()
 	})
 
 	// Core messaging
-	it('receives inbound and delivers outbound messages', async () => {
+	e2eTest('receives inbound and delivers outbound messages', async () => {
 		const inboundText = `e2e inbound ${Date.now()}`
 		const inboundPromise = waitForGatewayEvent(ws, 'message.received', (e) => e.payload.text === inboundText, TIMEOUT_MS)
 
@@ -436,21 +476,21 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 	}, TIMEOUT_MS)
 
 	// HTTP API tests
-	it('GET /health returns ok', async () => {
+	e2eTest('GET /health returns ok', async () => {
 		const res = await fetch(`http://127.0.0.1:${port}/health`)
 		const json = await res.json()
 		expect(json.ok).toBe(true)
 		expect(json.version).toBeDefined()
 	})
 
-	it('GET /status returns server info', async () => {
+	e2eTest('GET /status returns server info', async () => {
 		const res = await fetch(`http://127.0.0.1:${port}/status`)
 		const json = await res.json()
 		expect(json.startedAt).toBeDefined()
 		expect(json.bot?.username).toBeDefined()
 	})
 
-	it('POST /send with invalid chatId returns error', async () => {
+	e2eTest('POST /send with invalid chatId returns error', async () => {
 		const res = await fetch(`http://127.0.0.1:${port}/send`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
@@ -459,114 +499,188 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect((await res.json()).ok).toBe(false)
 	})
 
+	e2eTest('POST /send recovers after error', async () => {
+		const validChatId = await ensureChatId()
+		const badRes = await fetch(`http://127.0.0.1:${port}/send`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ chatId: 999999999, text: 'bad send' }),
+		})
+		expect((await badRes.json()).ok).toBe(false)
+
+		const outboundText = `e2e recovery ${Date.now()}`
+		const okRes = await fetch(`http://127.0.0.1:${port}/send`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+			body: JSON.stringify({ chatId: validChatId, text: outboundText }),
+		})
+		expect((await okRes.json()).ok).toBe(true)
+		await waitForBotMessage(client, botUsername, outboundText, TIMEOUT_MS)
+	}, TIMEOUT_MS)
+
+	// Media edge cases
+	e2eTest('captures document caption and unicode filename (no extension)', async () => {
+		const filename = `unicode-文件-${Date.now()}`
+		const filePath = join(mediaDir, filename)
+		await writeFile(filePath, 'E2E unicode document', 'utf-8')
+		const caption = `Doc caption ${Date.now()} ${'x'.repeat(200)}`
+
+		const inboundPromise = waitForGatewayEvent(
+			ws,
+			'message.received',
+			(event) => {
+				const payload = event.payload
+				const hasDoc = Boolean(payload.attachments?.some((att) => att.type === 'document'))
+				return hasDoc && payload.text === caption
+			},
+			TIMEOUT_MS,
+		)
+
+		await client.sendFile(botUsername, { file: filePath, caption, forceDocument: true })
+		const inbound = await inboundPromise
+		expect(inbound.payload.text).toBe(caption)
+		const raw = inbound.payload.raw as Record<string, unknown> | undefined
+		const doc = raw?.document as Record<string, unknown> | undefined
+		const fileName = typeof doc?.file_name === 'string' ? doc.file_name : ''
+		expect(fileName.length).toBeGreaterThan(0)
+		expect(fileName.startsWith(filename)).toBe(true)
+	}, TIMEOUT_MS)
+
+	e2eTest('captures photo attachment with caption', async () => {
+		const filename = `photo-${Date.now()}.png`
+		const filePath = join(mediaDir, filename)
+		const pngData = Buffer.from(
+			'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+			'base64',
+		)
+		await writeFile(filePath, pngData)
+		const caption = `Photo caption ${Date.now()}`
+
+		const inboundPromise = waitForGatewayEvent(
+			ws,
+			'message.received',
+			(event) => {
+				const payload = event.payload
+				const hasAttachment = Boolean(payload.attachments?.length)
+				return hasAttachment && payload.text === caption
+			},
+			TIMEOUT_MS,
+		)
+
+		await client.sendFile(botUsername, { file: filePath, caption })
+		const inbound = await inboundPromise
+		expect(inbound.payload.text).toBe(caption)
+		expect(inbound.payload.attachments?.some((att) => att.type === 'photo')).toBe(true)
+	}, TIMEOUT_MS)
+
 	// Bridge command tests
-	it('/status returns session info', async () => {
+	e2eTest('/status returns session info', async () => {
 		await client.sendMessage(botUsername, { message: '/status' })
 		const reply = await waitForBotMessageContaining(client, botUsername, 'CLI:', SHORT_TIMEOUT)
 		expect(reply).toContain('CLI:')
 	}, TIMEOUT_MS)
 
-	it('/model without arg shows usage', async () => {
+	e2eTest('/model without arg shows usage', async () => {
 		await client.sendMessage(botUsername, { message: '/model' })
 		const reply = await waitForBotMessageContaining(client, botUsername, 'Usage:', SHORT_TIMEOUT)
 		expect(reply).toContain('/model')
 	}, TIMEOUT_MS)
 
-	it('/model opus sets model', async () => {
+	e2eTest('/model opus sets model', async () => {
 		await client.sendMessage(botUsername, { message: '/model opus' })
 		const reply = await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 		expect(reply).toContain('opus')
 	}, TIMEOUT_MS)
 
-	it('/model switch applies to next session (claude)', async () => {
+	e2eTest('/model switch applies to next session (claude)', async () => {
 		await runModelSwitchTest(
 			client,
 			botUsername,
 			'claude',
 			{ alias: 'haiku', modelId: 'claude-haiku-4-5-20251001' },
 			{ alias: 'opus', modelId: 'claude-opus-4-5-20251101' },
+			switchCli,
 		)
 	}, LONG_TIMEOUT)
 
-	it.skipIf(!hasDroid)('/model switch applies to next session (droid)', async () => {
+	e2eTest.skipIf(!hasDroid)('/model switch applies to next session (droid)', async () => {
 		await runModelSwitchTest(
 			client,
 			botUsername,
 			'droid',
 			{ alias: 'haiku', modelId: 'claude-haiku-4-5-20251001' },
 			{ alias: 'opus', modelId: 'claude-opus-4-5-20251101' },
+			switchCli,
 		)
 	}, LONG_TIMEOUT)
 
-	it.skipIf(!hasCodex)('/model switch applies to next session (codex)', async () => {
+	e2eTest.skipIf(!hasCodex)('/model switch applies to next session (codex)', async () => {
 		await runModelSwitchTest(
 			client,
 			botUsername,
 			'codex',
 			{ alias: 'codex', modelId: 'gpt-5.2-codex' },
 			{ alias: 'codex-max', modelId: 'gpt-5.1-codex-max' },
+			switchCli,
 		)
 	}, LONG_TIMEOUT)
 
-	it.skipIf(!hasPi)('/model switch applies to next session (pi)', async () => {
+	e2eTest.skipIf(!hasPi)('/model switch applies to next session (pi)', async () => {
 		await runModelSwitchTest(
 			client,
 			botUsername,
 			'pi',
 			{ alias: 'haiku', modelId: 'claude-haiku-4-5-20251001' },
 			{ alias: 'opus', modelId: 'claude-opus-4-5-20251101' },
+			switchCli,
 		)
 	}, LONG_TIMEOUT)
 
-	it('/new starts fresh session', async () => {
+	e2eTest('/new starts fresh session', async () => {
 		await client.sendMessage(botUsername, { message: '/new' })
 		const reply = await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
-	it('/stop stops current session', async () => {
+	e2eTest('/stop stops current session', async () => {
 		await client.sendMessage(botUsername, { message: '/stop' })
 		const reply = await waitForBotMessageContaining(client, botUsername, 'stop', SHORT_TIMEOUT)
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
-	it('/stream toggles streaming', async () => {
+	e2eTest('/stream toggles streaming', async () => {
 		await client.sendMessage(botUsername, { message: '/stream' })
 		const reply = await waitForBotMessageContaining(client, botUsername, 'Streaming', SHORT_TIMEOUT)
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
-	it('/verbose toggles verbose mode', async () => {
+	e2eTest('/verbose toggles verbose mode', async () => {
 		await client.sendMessage(botUsername, { message: '/verbose' })
 		const reply = await waitForBotMessageContaining(client, botUsername, 'erbose', SHORT_TIMEOUT)
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
-	it('/use claude switches CLI', async () => {
-		await client.sendMessage(botUsername, { message: '/use claude' })
-		const reply = await waitForBotMessageContaining(client, botUsername, 'claude', SHORT_TIMEOUT)
+	e2eTest('/use claude switches CLI', async () => {
+		const reply = await switchCli('claude', { force: true })
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
-	it.skipIf(!hasDroid)('/use droid switches CLI', async () => {
-		await client.sendMessage(botUsername, { message: '/use droid' })
-		const reply = await waitForBotMessageContaining(client, botUsername, 'droid', SHORT_TIMEOUT)
+	e2eTest.skipIf(!hasDroid)('/use droid switches CLI', async () => {
+		const reply = await switchCli('droid', { force: true })
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
-	it.skipIf(!hasCodex)('/use codex switches CLI', async () => {
-		await client.sendMessage(botUsername, { message: '/use codex' })
-		const reply = await waitForBotMessageContaining(client, botUsername, 'codex', SHORT_TIMEOUT)
+	e2eTest.skipIf(!hasCodex)('/use codex switches CLI', async () => {
+		const reply = await switchCli('codex', { force: true })
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
-	it.skipIf(!hasPi)('/use pi switches CLI', async () => {
-		await client.sendMessage(botUsername, { message: '/use pi' })
-		const reply = await waitForBotMessageContaining(client, botUsername, 'pi', SHORT_TIMEOUT)
+	e2eTest.skipIf(!hasPi)('/use pi switches CLI', async () => {
+		const reply = await switchCli('pi', { force: true })
 		expect(reply).toBeDefined()
 	}, TIMEOUT_MS)
 
-	it('/cron list returns response', async () => {
+	e2eTest('/cron list returns response', async () => {
 		await client.sendMessage(botUsername, { message: '/cron list' })
 		// Wait for any response (could be "No jobs" or a list)
 		await delay(3000)
@@ -576,25 +690,24 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 	// FUNCTIONAL TESTS - verify actual behavior
 	// ============================================
 
-	it.skipIf(!hasDroid)('spawns a droid subagent while main droid session responds', async () => {
-		await runSubagentConcurrencyTest(client, botUsername, 'droid')
+	e2eTest.skipIf(!hasDroid)('spawns a droid subagent while main droid session responds', async () => {
+		await runSubagentConcurrencyTest(client, botUsername, 'droid', switchCli)
 	}, LONG_TIMEOUT * 2)
 
-	it('spawns a claude subagent while main claude session responds', async () => {
-		await runSubagentConcurrencyTest(client, botUsername, 'claude')
+	e2eTest('spawns a claude subagent while main claude session responds', async () => {
+		await runSubagentConcurrencyTest(client, botUsername, 'claude', switchCli)
 	}, LONG_TIMEOUT * 2)
 
-	it.skipIf(!hasCodex)('spawns a codex subagent while main codex session responds', async () => {
-		await runSubagentConcurrencyTest(client, botUsername, 'codex')
+	e2eTest.skipIf(!hasCodex)('spawns a codex subagent while main codex session responds', async () => {
+		await runSubagentConcurrencyTest(client, botUsername, 'codex', switchCli)
 	}, LONG_TIMEOUT * 2)
 
-	it.skipIf(!hasPi)('spawns a pi subagent while main pi session responds', async () => {
-		await runSubagentConcurrencyTest(client, botUsername, 'pi')
+	e2eTest.skipIf(!hasPi)('spawns a pi subagent while main pi session responds', async () => {
+		await runSubagentConcurrencyTest(client, botUsername, 'pi', switchCli)
 	}, LONG_TIMEOUT * 2)
 
-	it('sends a prompt and receives an AI response (claude)', async () => {
-		await client.sendMessage(botUsername, { message: '/use claude' })
-		await waitForBotMessageContaining(client, botUsername, 'claude', SHORT_TIMEOUT)
+	e2eTest('sends a prompt and receives an AI response (claude)', async () => {
+		await switchCli('claude')
 		await client.sendMessage(botUsername, { message: '/model haiku' })
 		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 		// Start fresh
@@ -615,12 +728,11 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(response).toContain('4')
 	}, LONG_TIMEOUT)
 
-	it.skipIf(!hasCodex)('sends a prompt and receives an AI response (codex)', async () => {
+	e2eTest.skipIf(!hasCodex)('sends a prompt and receives an AI response (codex)', async () => {
 		// Start fresh
 		await client.sendMessage(botUsername, { message: '/new' })
 		await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
-		await client.sendMessage(botUsername, { message: '/use codex' })
-		await waitForBotMessageContaining(client, botUsername, 'codex', SHORT_TIMEOUT)
+		await switchCli('codex')
 		await client.sendMessage(botUsername, { message: '/model codex' })
 		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 		await client.sendMessage(botUsername, { message: '/new' })
@@ -640,9 +752,8 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(response).toContain('4')
 	}, LONG_TIMEOUT)
 
-	it.skipIf(!hasDroid)('sends a prompt and receives an AI response (droid)', async () => {
-		await client.sendMessage(botUsername, { message: '/use droid' })
-		await waitForBotMessageContaining(client, botUsername, 'droid', SHORT_TIMEOUT)
+	e2eTest.skipIf(!hasDroid)('sends a prompt and receives an AI response (droid)', async () => {
+		await switchCli('droid')
 		await client.sendMessage(botUsername, { message: '/model haiku' })
 		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 
@@ -663,9 +774,8 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(response).toContain('6')
 	}, LONG_TIMEOUT)
 
-	it.skipIf(!hasPi)('sends a prompt and receives an AI response (pi)', async () => {
-		await client.sendMessage(botUsername, { message: '/use pi' })
-		await waitForBotMessageContaining(client, botUsername, 'pi', SHORT_TIMEOUT)
+	e2eTest.skipIf(!hasPi)('sends a prompt and receives an AI response (pi)', async () => {
+		await switchCli('pi')
 		await client.sendMessage(botUsername, { message: '/model haiku' })
 		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 
@@ -686,9 +796,8 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(response).toContain('10')
 	}, LONG_TIMEOUT)
 
-	it('/new actually clears session context', async () => {
-		await client.sendMessage(botUsername, { message: '/use claude' })
-		await waitForBotMessageContaining(client, botUsername, 'claude', SHORT_TIMEOUT)
+	e2eTest('/new actually clears session context', async () => {
+		await switchCli('claude')
 		await client.sendMessage(botUsername, { message: '/model haiku' })
 		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 		// Send a message with a unique identifier
@@ -728,9 +837,8 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 		expect(response).not.toContain(secretWord)
 	}, LONG_TIMEOUT)
 
-	it('/stop actually terminates a running session', async () => {
-		await client.sendMessage(botUsername, { message: '/use claude' })
-		await waitForBotMessageContaining(client, botUsername, 'claude', SHORT_TIMEOUT)
+	e2eTest('/stop actually terminates a running session', async () => {
+		await switchCli('claude')
 		await client.sendMessage(botUsername, { message: '/model haiku' })
 		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 		// Start fresh and begin a long task
@@ -758,7 +866,7 @@ describe.skipIf(!shouldRun)('telegram gateway e2e', () => {
 })
 
 describe('telegram gateway e2e (skipped)', () => {
-	it.skipIf(shouldRun)('skipped: set TG_E2E_RUN=1 with valid TG_E2E_* env vars', () => {
+	e2eTest.skipIf(shouldRun)('skipped: set TG_E2E_RUN=1 with valid TG_E2E_* env vars', () => {
 		// This test exists to show why the suite was skipped
 		if (isCI) {
 			console.log('Skipped: Telegram E2E tests are local-only (CI detected)')

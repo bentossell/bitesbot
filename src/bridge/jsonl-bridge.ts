@@ -1,5 +1,5 @@
 import WebSocket from 'ws'
-import type { GatewayEvent, IncomingMessage } from '../protocol/types.js'
+import type { GatewayEvent, IncomingMessage, OutboundMessage } from '../protocol/types.js'
 import { type CLIManifest, loadAllManifests } from './manifest.js'
 import {
 	JsonlSession,
@@ -65,6 +65,8 @@ import {
 import { getRelativePath } from '../workspace/path-utils.js'
 import { buildBootContext } from '../workspace/boot-context.js'
 import type { Skill } from '../skills/index.js'
+import { normalizeBridgeEvents } from './normalize.js'
+import { extractSendfileCommands } from './sendfile.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -76,6 +78,7 @@ export type BridgeConfig = {
 	allowedChatIds?: number[]
 	memory?: MemoryConfig
 	envFile?: string
+	normalizedOutput?: boolean
 }
 
 export type BridgeHandle = {
@@ -641,8 +644,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 const sendToGateway = async (
 	baseUrl: string,
 	authToken: string | undefined,
-	chatId: number | string,
-	text: string
+	payload: OutboundMessage
 ) => {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' }
 	if (authToken) {
@@ -654,20 +656,20 @@ const sendToGateway = async (
 		const response = await fetch(`${httpUrl}/send`, {
 			method: 'POST',
 			headers,
-			body: JSON.stringify({ chatId, text }),
+			body: JSON.stringify(payload),
 		})
 		if (!response.ok) {
 			const body = await response.text().catch(() => '')
 			void logToFile('error', 'bridge send non-200', {
 				status: response.status,
-				chatId,
+				chatId: payload.chatId,
 				body: body.slice(0, 1000),
 			}).catch(() => {})
 		}
 	} catch (err) {
 		logError(`[jsonl-bridge] Failed to send message:`, err)
 		const message = err instanceof Error ? err.message : 'unknown error'
-		void logToFile('error', 'bridge send failed', { error: message, chatId }).catch(() => {})
+		void logToFile('error', 'bridge send failed', { error: message, chatId: payload.chatId }).catch(() => {})
 	}
 }
 
@@ -729,27 +731,6 @@ const sendFileToGateway = async (
 		void logToFile('error', 'bridge send file failed', { error: message, chatId, filePath }).catch(() => {})
 		return false
 	}
-}
-
-/**
- * Extract [Sendfile: /path/to/file] patterns from text
- * Returns array of { filePath, caption? } and the remaining text
- */
-const extractSendfileCommands = (text: string): { files: Array<{ path: string; caption?: string }>; remainingText: string } => {
-	const pattern = /\[Sendfile:\s*([^\]]+)\](?:\s*\n*(?:Caption:\s*([^\n]+))?)?/gi
-	const files: Array<{ path: string; caption?: string }> = []
-	
-	let match
-	while ((match = pattern.exec(text)) !== null) {
-		const filePath = match[1].trim()
-		const caption = match[2]?.trim()
-		files.push({ path: filePath, caption })
-	}
-	
-	// Remove the sendfile commands from text
-	const remainingText = text.replace(pattern, '').trim()
-	
-	return { files, remainingText }
 }
 
 const SUBAGENT_SPAWN_INSTRUCTIONS = [
@@ -1047,9 +1028,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	}
 
 	const ws = new WebSocket(wsEndpoint, { headers })
+	const normalizedOutputEnabled = config.normalizedOutput === true || process.env.TG_GATEWAY_NORMALIZED_OUTPUT === '1'
 
 	const send = (chatId: number | string, text: string) =>
-		sendToGateway(config.gatewayUrl, config.authToken, chatId, text)
+		sendToGateway(config.gatewayUrl, config.authToken, { chatId, text })
 
 	const typing = (chatId: number | string) =>
 		sendTyping(config.gatewayUrl, config.authToken, chatId)
@@ -1180,6 +1162,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 		// Track files to send at completion (during streaming we just note them)
 		const pendingFiles: Array<{ path: string; caption?: string }> = []
+		const normalizationEvents: BridgeEvent[] = []
 
 		const flushStreamBuffer = async (force = false) => {
 			if (streamTimer) {
@@ -1218,6 +1201,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		}
 
 		session.on('event', async (evt: BridgeEvent) => {
+			normalizationEvents.push(evt)
 			switch (evt.type) {
 				case 'started':
 					log(`[jsonl-bridge] [${Date.now() - t0}ms] Session started: ${evt.sessionId}`)
@@ -1433,7 +1417,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 								}
 							}
 
-							void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
+						void persistentStore.logMessage(chatId, 'assistant', evt.answer, evt.sessionId, cliName)
 						// Post-turn durable flush (best-effort)
 						try {
 							if (config.memory?.enabled && isMainSession) {
@@ -1442,44 +1426,65 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 						} catch {
 							// ignore
 						}
-						
-						// Extract and send any file attachments from the response (for non-streaming case)
+
+						const settings = getSettings()
+						const useNormalizedOutput = normalizedOutputEnabled && !settings.streaming
 						const { files, remainingText } = extractSendfileCommands(evt.answer)
-						for (const file of files) {
-							// Skip if already sent from pendingFiles
-							if (pendingFiles.some(f => f.path === file.path)) continue
-							log(`[jsonl-bridge] Sending file attachment: ${file.path}`)
-							const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
-							if (!sent) {
-								await send(chatId, `❌ Failed to send file: ${file.path}`)
-							}
-						}
-						
-						// Send remaining text (if any, and not already streamed)
 						const textToSend = files.length > 0 ? remainingText : evt.answer
-						if (textToSend) {
-							if (getSettings().streaming) {
-								const trimmed = textToSend.trim()
-								if (!trimmed) {
-									// nothing to send
-								} else if (lastStreamedText && trimmed.startsWith(lastStreamedText)) {
-									const delta = trimmed.slice(lastStreamedText.length).trim()
-									if (delta) {
-										const chunks = splitMessage(delta)
+
+						if (useNormalizedOutput) {
+							const normalized = normalizeBridgeEvents(normalizationEvents, {
+								chatId,
+								cli: cliName,
+								model: settings.model,
+								transport: 'telegram',
+								conversationId: String(chatId),
+								sessionId: currentSessionId,
+								verbose: settings.verbose,
+								streaming: settings.streaming,
+							})
+							await sendToGateway(config.gatewayUrl, config.authToken, {
+								chatId,
+								text: textToSend,
+								structured: normalized,
+							})
+						} else {
+							// Extract and send any file attachments from the response (for non-streaming case)
+							for (const file of files) {
+								// Skip if already sent from pendingFiles
+								if (pendingFiles.some(f => f.path === file.path)) continue
+								log(`[jsonl-bridge] Sending file attachment: ${file.path}`)
+								const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
+								if (!sent) {
+									await send(chatId, `❌ Failed to send file: ${file.path}`)
+								}
+							}
+
+							// Send remaining text (if any, and not already streamed)
+							if (textToSend) {
+								if (settings.streaming) {
+									const trimmed = textToSend.trim()
+									if (!trimmed) {
+										// nothing to send
+									} else if (lastStreamedText && trimmed.startsWith(lastStreamedText)) {
+										const delta = trimmed.slice(lastStreamedText.length).trim()
+										if (delta) {
+											const chunks = splitMessage(delta)
+											for (const chunk of chunks) {
+												await send(chatId, chunk)
+											}
+										}
+									} else if (!lastStreamedText || trimmed !== lastStreamedText) {
+										const chunks = splitMessage(trimmed)
 										for (const chunk of chunks) {
 											await send(chatId, chunk)
 										}
 									}
-								} else if (!lastStreamedText || trimmed !== lastStreamedText) {
-									const chunks = splitMessage(trimmed)
+								} else {
+									const chunks = splitMessage(textToSend)
 									for (const chunk of chunks) {
 										await send(chatId, chunk)
 									}
-								}
-							} else {
-								const chunks = splitMessage(textToSend)
-								for (const chunk of chunks) {
-									await send(chatId, chunk)
 								}
 							}
 						}

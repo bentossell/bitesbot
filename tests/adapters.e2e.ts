@@ -14,7 +14,7 @@
  * - TG_E2E_BOT_TOKEN, TG_E2E_BOT_USERNAME
  * - TG_E2E_RUN=1
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { TelegramClient, sessions } from 'telegram'
 import WebSocket from 'ws'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -25,6 +25,7 @@ import { mkdtemp, rm, writeFile, readFile, mkdir, readdir } from 'node:fs/promis
 import { homedir, tmpdir } from 'node:os'
 import { startGatewayServer, type GatewayServerHandle } from '../src/gateway/server.js'
 import { startBridge, type BridgeHandle, setWorkspaceDir } from '../src/bridge/index.js'
+import { acquireE2eLock, e2eTest, isE2eTestCompleted } from './e2e-checkpoint.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Environment & Config
@@ -75,6 +76,7 @@ if (piPath) {
 const SHORT_TIMEOUT = 30_000
 const MEDIUM_TIMEOUT = 60_000
 const LONG_TIMEOUT = 180_000
+const POLL_DELAY_MS = 2000
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock Workspace Structure - Simulates a bot that's been used for a while
@@ -471,7 +473,7 @@ const waitForBotMessageContaining = async (
 			seenIds.add(msg.id)
 			if (text.toLowerCase().includes(needle)) return text
 		}
-		await delay(1500)
+	await delay(POLL_DELAY_MS)
 	}
 	throw new Error(`Timeout waiting for bot reply containing: ${substring}`)
 }
@@ -502,7 +504,7 @@ const waitForNewBotMessage = async (
 				return text
 			}
 		}
-		await delay(1500)
+		await delay(POLL_DELAY_MS)
 	}
 	throw new Error('Timeout waiting for new bot message matching predicate')
 }
@@ -519,9 +521,46 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	let tempDir: string
 	let toolTestDir: string
 	let workspaceDir: string
+	let allowedChatId: number
+	let currentCli: string | null = null
+	let releaseLock: (() => void) | null = null
 	const port = Number.isNaN(gatewayPort) ? 8791 : gatewayPort
 
+	const waitForActiveCli = async (cli: string, timeout = SHORT_TIMEOUT) => {
+		const hasChatId = typeof allowedChatId === 'number' && !Number.isNaN(allowedChatId)
+		if (!bridge || !hasChatId) return
+		const start = Date.now()
+		while (Date.now() - start < timeout) {
+			const activeCli = bridge.getSessionStore().getActiveCli(allowedChatId)
+			if (activeCli === cli) return
+			await delay(POLL_DELAY_MS)
+		}
+		throw new Error(`Timeout waiting for active CLI: ${cli}`)
+	}
+
+	const switchCli = async (cli: string, options: { force?: boolean } = {}) => {
+		const hasChatId = typeof allowedChatId === 'number' && !Number.isNaN(allowedChatId)
+		const activeCli = bridge && hasChatId
+			? bridge.getSessionStore().getActiveCli(allowedChatId) ?? currentCli
+			: currentCli
+		if (!options.force && activeCli === cli) {
+			currentCli = cli
+			return
+		}
+		await client.sendMessage(botUsername, { message: `/use ${cli}` })
+		await waitForActiveCli(cli)
+		currentCli = cli
+	}
+
+	const resetModel = async (adapter: AdapterInfo) => {
+		const defaultAlias = adapter.modelAliases[0]
+		if (!defaultAlias) return
+		await client.sendMessage(botUsername, { message: `/model ${defaultAlias}` })
+		await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
+	}
+
 	beforeAll(async () => {
+		releaseLock = await acquireE2eLock()
 		// Create isolated temp workspace
 		tempDir = await mkdtemp(join(tmpdir(), 'bitesbot-adapters-e2e-'))
 		const mockWorkspace = await createMockWorkspace(tempDir)
@@ -538,7 +577,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 		}
 
 		const me = await client.getMe()
-		const allowedChatId = allowedChatIdEnv ? Number(allowedChatIdEnv) : Number(me.id)
+		allowedChatId = allowedChatIdEnv ? Number(allowedChatIdEnv) : Number(me.id)
 
 		server = await startGatewayServer({
 			botToken,
@@ -583,6 +622,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 		if (server) await server.close()
 		if (client) await client.disconnect()
 		if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {})
+		releaseLock?.()
 	})
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -590,10 +630,14 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe.each(getAvailableAdapters())('$name adapter', (adapter) => {
+		const toolTimeout = adapter.name === 'pi' ? LONG_TIMEOUT * 2 : LONG_TIMEOUT
+
 		beforeEach(async () => {
+			if (isE2eTestCompleted()) {
+				return
+			}
 			// Switch to the adapter and start fresh
-			await client.sendMessage(botUsername, { message: `/use ${adapter.name}` })
-			await waitForBotMessageContaining(client, botUsername, adapter.name, SHORT_TIMEOUT)
+			await switchCli(adapter.name)
 			await client.sendMessage(botUsername, { message: '/new' })
 			await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
 		}, MEDIUM_TIMEOUT)
@@ -602,7 +646,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 		// 1. Spawn & Basic Response
 		// ───────────────────────────────────────────────────────────────────────
 
-		it('spawns successfully and responds to simple prompt', async () => {
+		e2eTest('spawns successfully and responds to simple prompt', async () => {
 			const beforeSend = Date.now()
 			await client.sendMessage(botUsername, { message: 'What is 2+2? Reply with just the number.' })
 			
@@ -620,7 +664,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 		// 2. Model Switching & /status
 		// ───────────────────────────────────────────────────────────────────────
 
-		it.skipIf(adapter.modelAliases.length === 0)('/model switches model and /status reflects it', async () => {
+		e2eTest.skipIf(adapter.modelAliases.length === 0)('/model switches model and /status reflects it', async () => {
 			const modelAlias = adapter.modelAliases[0]
 			
 			// Switch model
@@ -634,18 +678,19 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			expect(statusReply).toContain(`CLI: ${adapter.name}`)
 		}, MEDIUM_TIMEOUT)
 
-		it('/model with invalid name returns helpful error', async () => {
+		e2eTest('/model with invalid name returns helpful error', async () => {
 			await client.sendMessage(botUsername, { message: '/model invalid-model-xyz-12345' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
 			// The gateway accepts any model string, so it should just echo it back
 			expect(reply).toBeDefined()
+			await resetModel(adapter)
 		}, SHORT_TIMEOUT)
 
 		// ───────────────────────────────────────────────────────────────────────
 		// 3. Session Continuity (Multi-turn)
 		// ───────────────────────────────────────────────────────────────────────
 
-		it('maintains session continuity across turns', async () => {
+		e2eTest('maintains session continuity across turns', async () => {
 			const secretWord = `SECRET_${adapter.name}_${Date.now()}`
 			
 			// First turn: tell it a secret
@@ -678,8 +723,8 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 		// 4. Tool Use Tests
 		// ───────────────────────────────────────────────────────────────────────
 
-		describe.skipIf(!adapter.supportsToolUse)('tool use', () => {
-			it('can read files', async () => {
+			describe.skipIf(!adapter.supportsToolUse)('tool use', () => {
+				e2eTest('can read files', async () => {
 				// Create a test file
 				const testFilePath = join(toolTestDir, `read-test-${adapter.name}.txt`)
 				const testContent = `Hello from ${adapter.name} read test!`
@@ -695,12 +740,12 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 					botUsername,
 					beforeSend,
 					(text) => text.includes(testContent) || text.includes('Hello from'),
-					LONG_TIMEOUT,
+					toolTimeout,
 				)
 				expect(response).toContain(testContent)
-			}, LONG_TIMEOUT)
+			}, toolTimeout)
 
-			it('can create files', async () => {
+				e2eTest('can create files', async () => {
 				const testFilePath = join(toolTestDir, `create-test-${adapter.name}-${Date.now()}.txt`)
 				const testContent = `Created by ${adapter.name}`
 
@@ -714,7 +759,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 					botUsername,
 					beforeSend,
 					(text) => text.toLowerCase().includes('creat') || text.toLowerCase().includes('done'),
-					LONG_TIMEOUT,
+					toolTimeout,
 				)
 
 				// Verify file was created
@@ -726,9 +771,9 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 					const content = await readFile(testFilePath, 'utf-8')
 					expect(content).toContain(testContent)
 				}
-			}, LONG_TIMEOUT)
+			}, toolTimeout)
 
-			it('can execute shell commands', async () => {
+				e2eTest('can execute shell commands', async () => {
 				const beforeSend = Date.now()
 				await client.sendMessage(botUsername, { 
 					message: 'Run "echo SHELLTEST123" and tell me what it outputs.' 
@@ -739,12 +784,12 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 					botUsername,
 					beforeSend,
 					(text) => text.includes('SHELLTEST123'),
-					LONG_TIMEOUT,
+					toolTimeout,
 				)
 				expect(response).toContain('SHELLTEST123')
-			}, LONG_TIMEOUT)
+			}, toolTimeout)
 
-			it('can chain multiple tools', async () => {
+				e2eTest('can chain multiple tools', async () => {
 				// Tool chaining: create file, read it back, report content
 				const testFilePath = join(toolTestDir, `chain-test-${adapter.name}-${Date.now()}.txt`)
 				const uniqueContent = `CHAIN_${Date.now()}_TEST`
@@ -759,12 +804,12 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 					botUsername,
 					beforeSend,
 					(text) => text.includes(uniqueContent),
-					LONG_TIMEOUT,
+					toolTimeout,
 				)
 				expect(response).toContain(uniqueContent)
-			}, LONG_TIMEOUT)
+			}, toolTimeout)
 
-			it('can search/grep in files', async () => {
+				e2eTest('can search/grep in files', async () => {
 				// Create files to search
 				const searchDir = join(toolTestDir, `search-${adapter.name}-${Date.now()}`)
 				await import('node:fs/promises').then(fs => fs.mkdir(searchDir, { recursive: true }))
@@ -783,17 +828,17 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 					botUsername,
 					beforeSend,
 					(text) => text.includes('file1') || text.includes(uniquePattern),
-					LONG_TIMEOUT,
+					toolTimeout,
 				)
 				expect(response).toMatch(/file1|found/i)
-			}, LONG_TIMEOUT)
+			}, toolTimeout)
 		})
 
 		// ───────────────────────────────────────────────────────────────────────
 		// 5. Clean Exit (/stop)
 		// ───────────────────────────────────────────────────────────────────────
 
-		it('/stop terminates running session cleanly', async () => {
+		e2eTest('/stop terminates running session cleanly', async () => {
 			// Start a potentially long task
 			await client.sendMessage(botUsername, { message: 'List numbers from 1 to 50, one per line.' })
 			
@@ -815,7 +860,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 		// 6. Timeout/Error Handling
 		// ───────────────────────────────────────────────────────────────────────
 
-		it('handles errors gracefully', async () => {
+		e2eTest('handles errors gracefully', async () => {
 			const beforeSend = Date.now()
 			// Try to read a nonexistent file
 			await client.sendMessage(botUsername, { 
@@ -827,11 +872,11 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 				botUsername,
 				beforeSend,
 				(text) => text.length > 10 && !text.includes('CLI:'),
-				LONG_TIMEOUT,
+				toolTimeout,
 			)
 			// Should report the file doesn't exist or error, not crash
 			expect(response.toLowerCase()).toMatch(/not exist|no such|cannot|error|doesn't exist|unable/i)
-		}, LONG_TIMEOUT)
+		}, toolTimeout)
 	})
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -839,7 +884,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('cross-adapter', () => {
-		it('/use switches between available adapters', async () => {
+		e2eTest('/use switches between available adapters', async () => {
 			const available = getAvailableAdapters()
 			if (available.length < 2) {
 				console.log('Skipping cross-adapter test: need at least 2 adapters')
@@ -847,29 +892,27 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			}
 
 			for (const adapter of available) {
-				await client.sendMessage(botUsername, { message: `/use ${adapter.name}` })
-				const reply = await waitForBotMessageContaining(client, botUsername, adapter.name, SHORT_TIMEOUT)
-				expect(reply).toContain(adapter.name)
-				
+				await switchCli(adapter.name, { force: true })
+
 				await client.sendMessage(botUsername, { message: '/status' })
 				const status = await waitForBotMessageContaining(client, botUsername, 'CLI:', SHORT_TIMEOUT)
 				expect(status).toContain(`CLI: ${adapter.name}`)
 			}
 		}, LONG_TIMEOUT)
 
-		it('/use with invalid CLI returns helpful error', async () => {
+		e2eTest('/use with invalid CLI returns helpful error', async () => {
 			await client.sendMessage(botUsername, { message: '/use nonexistent-cli-xyz' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'Unknown CLI', SHORT_TIMEOUT)
 			expect(reply).toContain('Available:')
+			currentCli = null
 		}, SHORT_TIMEOUT)
 
-		it('/new clears context and works with any adapter', async () => {
+		e2eTest('/new clears context and works with any adapter', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
 			const adapter = available[0]
-			await client.sendMessage(botUsername, { message: `/use ${adapter.name}` })
-			await waitForBotMessageContaining(client, botUsername, adapter.name, SHORT_TIMEOUT)
+			await switchCli(adapter.name)
 
 			const secretWord = `CROSSTEST_${Date.now()}`
 			
@@ -909,19 +952,19 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('/status enhancements', () => {
-		it('shows current CLI', async () => {
+		e2eTest('shows current CLI', async () => {
 			await client.sendMessage(botUsername, { message: '/status' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'CLI:', SHORT_TIMEOUT)
 			expect(reply).toMatch(/CLI:\s*\w+/)
 		}, SHORT_TIMEOUT)
 
-		it('shows streaming setting', async () => {
+		e2eTest('shows streaming setting', async () => {
 			await client.sendMessage(botUsername, { message: '/status' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'Streaming:', SHORT_TIMEOUT)
 			expect(reply).toMatch(/Streaming:\s*(on|off)/i)
 		}, SHORT_TIMEOUT)
 
-		it('shows session state when active', async () => {
+		e2eTest('shows session state when active', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -941,35 +984,74 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	})
 
 	// ─────────────────────────────────────────────────────────────────────────
+	// State Persistence Tests
+	// ─────────────────────────────────────────────────────────────────────────
+
+	describe('state persistence', () => {
+		e2eTest('persists streaming, verbose, and model settings across /new', async () => {
+			const available = getAvailableAdapters()
+			if (available.length === 0) return
+			if (Number.isNaN(allowedChatId)) return
+
+			await switchCli(available[0].name)
+
+			await client.sendMessage(botUsername, { message: '/stream on' })
+			await waitForBotMessageContaining(client, botUsername, 'Streaming', SHORT_TIMEOUT)
+
+			await client.sendMessage(botUsername, { message: '/verbose on' })
+			await waitForBotMessageContaining(client, botUsername, 'Verbose', SHORT_TIMEOUT)
+
+			await client.sendMessage(botUsername, { message: '/model haiku' })
+			await waitForBotMessageContaining(client, botUsername, 'Model set to', SHORT_TIMEOUT)
+
+			await client.sendMessage(botUsername, { message: '/new' })
+			await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
+
+			await client.sendMessage(botUsername, { message: '/status' })
+			const status = await waitForBotMessageContaining(client, botUsername, 'Streaming:', SHORT_TIMEOUT)
+			expect(status.toLowerCase()).toContain('streaming: on')
+
+			const storePath = join(workspaceDir, '.state', 'resume-tokens.json')
+			const stored = JSON.parse(await readFile(storePath, 'utf-8')) as {
+				chatSettings?: Record<string, { streaming?: boolean; verbose?: boolean; model?: string }>
+			}
+			const settings = stored.chatSettings?.[String(allowedChatId)]
+			expect(settings?.streaming).toBe(true)
+			expect(settings?.verbose).toBe(true)
+			expect(settings?.model?.toLowerCase()).toContain('haiku')
+		}, MEDIUM_TIMEOUT)
+	})
+
+	// ─────────────────────────────────────────────────────────────────────────
 	// Slash Commands Tests
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('slash commands', () => {
-		it('/help shows available commands', async () => {
+		e2eTest('/help shows available commands', async () => {
 			await client.sendMessage(botUsername, { message: '/help' })
 			const reply = await waitForBotMessageContaining(client, botUsername, '/', SHORT_TIMEOUT)
 			expect(reply).toMatch(/\/use|\/new|\/status|\/model/)
 		}, SHORT_TIMEOUT)
 
-		it('/models lists available model aliases', async () => {
+		e2eTest('/models lists available model aliases', async () => {
 			await client.sendMessage(botUsername, { message: '/models' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'opus', SHORT_TIMEOUT)
 			expect(reply).toMatch(/sonnet|haiku|opus/i)
 		}, SHORT_TIMEOUT)
 
-		it('/stream on enables streaming', async () => {
+		e2eTest('/stream on enables streaming', async () => {
 			await client.sendMessage(botUsername, { message: '/stream on' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'Streaming', SHORT_TIMEOUT)
 			expect(reply.toLowerCase()).toMatch(/on|enabled/)
 		}, SHORT_TIMEOUT)
 
-		it('/stream off disables streaming', async () => {
+		e2eTest('/stream off disables streaming', async () => {
 			await client.sendMessage(botUsername, { message: '/stream off' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'Streaming', SHORT_TIMEOUT)
 			expect(reply.toLowerCase()).toMatch(/off|disabled/)
 		}, SHORT_TIMEOUT)
 
-		it('/crons lists scheduled jobs (may be empty)', async () => {
+		e2eTest('/crons lists scheduled jobs (may be empty)', async () => {
 			await client.sendMessage(botUsername, { message: '/crons' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'cron', SHORT_TIMEOUT)
 			expect(reply).toBeDefined()
@@ -981,13 +1063,13 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('subagents', () => {
-		it('/subagents shows empty list initially', async () => {
+		e2eTest('/subagents shows empty list initially', async () => {
 			await client.sendMessage(botUsername, { message: '/subagents' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'subagent', SHORT_TIMEOUT)
 			expect(reply.toLowerCase()).toMatch(/no.*subagent|subagent|running/i)
 		}, SHORT_TIMEOUT)
 
-		it('/spawn creates a subagent and runs task', async () => {
+		e2eTest('/spawn creates a subagent and runs task', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -1009,7 +1091,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			expect(result).toBeDefined()
 		}, LONG_TIMEOUT)
 
-		it('/subagents shows running/completed subagents after spawn', async () => {
+		e2eTest('/subagents shows running/completed subagents after spawn', async () => {
 			// Spawn a quick task
 			await client.sendMessage(botUsername, { message: '/spawn What is 2+2?' })
 			await delay(2000) // Give it time to start
@@ -1025,20 +1107,26 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('cron and reminders', () => {
-		it('/cron creates a scheduled job', async () => {
+		e2eTest('/cron add with invalid schedule returns error', async () => {
+			await client.sendMessage(botUsername, { message: '/cron add "Bad schedule" every nonsense' })
+			const reply = await waitForBotMessageContaining(client, botUsername, 'Invalid schedule', SHORT_TIMEOUT)
+			expect(reply).toContain('Invalid schedule')
+		}, SHORT_TIMEOUT)
+
+		e2eTest('/cron creates a scheduled job', async () => {
 			// Create a cron that runs far in future (won't actually trigger)
 			await client.sendMessage(botUsername, { message: '/cron 0 0 1 1 * Test scheduled message' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'cron', MEDIUM_TIMEOUT)
 			expect(reply.toLowerCase()).toMatch(/created|scheduled|cron/)
 		}, MEDIUM_TIMEOUT)
 
-		it('/crons shows created cron job', async () => {
+		e2eTest('/crons shows created cron job', async () => {
 			await client.sendMessage(botUsername, { message: '/crons' })
-			const reply = await waitForBotMessageContaining(client, botUsername, 'Test scheduled', SHORT_TIMEOUT)
+			const reply = await waitForBotMessageContaining(client, botUsername, 'Test scheduled', MEDIUM_TIMEOUT)
 			expect(reply).toContain('Test scheduled')
-		}, SHORT_TIMEOUT)
+		}, MEDIUM_TIMEOUT)
 
-		it('/remind creates a reminder', async () => {
+		e2eTest('/remind creates a reminder', async () => {
 			await client.sendMessage(botUsername, { message: '/remind 60m Test reminder' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'remind', MEDIUM_TIMEOUT)
 			expect(reply.toLowerCase()).toMatch(/remind|scheduled|set/)
@@ -1050,12 +1138,11 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('memory and recall', () => {
-		it('agent can read MEMORY.md and recall user info', async () => {
+		e2eTest('agent can read MEMORY.md and recall user info', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
-			await client.sendMessage(botUsername, { message: `/use ${available[0].name}` })
-			await waitForBotMessageContaining(client, botUsername, available[0].name, SHORT_TIMEOUT)
+			await switchCli(available[0].name)
 			await client.sendMessage(botUsername, { message: '/new' })
 			await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
 
@@ -1074,7 +1161,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			expect(response).toMatch(/TestUser|UTC/)
 		}, LONG_TIMEOUT)
 
-		it('agent can find info in past session transcripts', async () => {
+		e2eTest('agent can find info in past session transcripts', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -1093,7 +1180,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			expect(response.toLowerCase()).toMatch(/bitesbot|telegram|gateway/)
 		}, LONG_TIMEOUT)
 
-		it('agent can search workspace docs', async () => {
+		e2eTest('agent can search workspace docs', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -1118,19 +1205,19 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('links and concepts', () => {
-		it('/concepts lists concepts from workspace', async () => {
+		e2eTest('/concepts lists concepts from workspace', async () => {
 			await client.sendMessage(botUsername, { message: '/concepts' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'concept', MEDIUM_TIMEOUT)
 			expect(reply.toLowerCase()).toMatch(/concept|index|file/)
 		}, MEDIUM_TIMEOUT)
 
-		it('/links shows wiki-link connections', async () => {
+		e2eTest('/links shows wiki-link connections', async () => {
 			await client.sendMessage(botUsername, { message: '/links' })
 			const reply = await waitForBotMessageContaining(client, botUsername, 'link', MEDIUM_TIMEOUT)
 			expect(reply.toLowerCase()).toMatch(/link|file|docs/)
 		}, MEDIUM_TIMEOUT)
 
-		it('agent can follow wiki-links between docs', async () => {
+		e2eTest('agent can follow wiki-links between docs', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -1155,12 +1242,11 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('robustness', () => {
-		it('handles unicode and special characters', async () => {
+		e2eTest('handles unicode and special characters', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
-			await client.sendMessage(botUsername, { message: `/use ${available[0].name}` })
-			await waitForBotMessageContaining(client, botUsername, available[0].name, SHORT_TIMEOUT)
+			await switchCli(available[0].name)
 			await client.sendMessage(botUsername, { message: '/new' })
 			await waitForBotMessageContaining(client, botUsername, 'fresh', SHORT_TIMEOUT)
 
@@ -1178,7 +1264,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			expect(response).toMatch(/Hello|世界|🌍|café|naïve/)
 		}, LONG_TIMEOUT)
 
-		it('handles code blocks correctly', async () => {
+		e2eTest('handles code blocks correctly', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -1195,7 +1281,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			expect(response).toMatch(/function|return/)
 		}, LONG_TIMEOUT)
 
-		it('handles concurrent messages gracefully', async () => {
+		e2eTest('handles concurrent messages gracefully', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -1213,7 +1299,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			expect(botMessages.length).toBeGreaterThan(0)
 		}, LONG_TIMEOUT)
 
-		it('handles large output chunking', async () => {
+		e2eTest('handles large output chunking', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -1237,7 +1323,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe('workspace isolation', () => {
-		it('agent file operations stay within temp workspace', async () => {
+		e2eTest('agent file operations stay within temp workspace', async () => {
 			const available = getAvailableAdapters()
 			if (available.length === 0) return
 
@@ -1266,7 +1352,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 			// Agent should have created file in temp workspace (workspaceDir)
 		}, LONG_TIMEOUT)
 
-		it('session logs are written to temp workspace', async () => {
+		e2eTest('session logs are written to temp workspace', async () => {
 			// Sessions dir should be in temp workspace
 			const sessionsDir = join(workspaceDir, 'sessions')
 			const files = await readdir(sessionsDir).catch(() => [])
@@ -1283,7 +1369,7 @@ describe.skipIf(!shouldRun)('adapters e2e', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('adapters e2e (skipped)', () => {
-	it.skipIf(shouldRun)('skipped: set TG_E2E_RUN=1 with valid TG_E2E_* env vars', () => {
+	e2eTest.skipIf(shouldRun)('skipped: set TG_E2E_RUN=1 with valid TG_E2E_* env vars', () => {
 		const available = getAvailableAdapters()
 		console.log(`Available adapters: ${available.map(a => a.name).join(', ') || 'none'}`)
 		

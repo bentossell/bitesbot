@@ -21,6 +21,7 @@ export type GatewayConfig = {
 	authToken?: string
 	configPath?: string
 	allowedChatIds?: number[]
+	normalizedOutput?: boolean
 	bridge: BridgeConfig
 }
 
@@ -87,6 +88,7 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 	const host = env.TG_GATEWAY_HOST ?? fileConfig.host ?? '127.0.0.1'
 	const port = parseNumber(env.TG_GATEWAY_PORT, fileConfig.port ?? DEFAULT_PORT) ?? DEFAULT_PORT
 	const authToken = env.TG_GATEWAY_AUTH_TOKEN ?? fileConfig.authToken
+	const normalizedOutput = parseBoolean(env.TG_GATEWAY_NORMALIZED_OUTPUT, fileConfig.normalizedOutput ?? false) ?? false
 
 	// Parse allowed chat IDs from env (comma-separated) or config file
 	const parseAllowedChatIds = (envValue?: string, fileValue?: number[]): number[] | undefined => {
@@ -151,6 +153,7 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Gatew
 		authToken,
 		configPath,
 		allowedChatIds,
+		normalizedOutput,
 		bridge,
 	}
 }

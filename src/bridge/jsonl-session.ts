@@ -192,16 +192,20 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			// Codex uses: codex exec --json --dangerously-bypass-approvals-and-sandbox "prompt"
 			const baseArgs = this.manifest.args
 			const hasExec = baseArgs[0] === 'exec'
+			const resumeId = resume?.sessionId
+			const isResume = Boolean(resumeId)
 			args = hasExec ? [...baseArgs] : ['exec', ...baseArgs]
-			if (resume?.sessionId && !args.includes('resume')) {
+			if (isResume && !args.includes('resume')) {
 				const execIndex = args.indexOf('exec')
 				const insertAt = execIndex === -1 ? 0 : execIndex + 1
 				args.splice(insertAt, 0, 'resume')
 			}
-			appendWorkingDirArgs(args)
+			if (!isResume) {
+				appendWorkingDirArgs(args)
+			}
 			appendModelArgs(args)
-			if (resume?.sessionId) {
-				args.push(resume.sessionId)
+			if (resumeId) {
+				args.push(resumeId)
 			}
 			args.push(prompt)
 		} else if (this.cli === 'pi') {

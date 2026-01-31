@@ -38,6 +38,7 @@ export const runGateway = async (options: RunOptions = {}) => {
 			workingDirectory: config.bridge.workingDirectory,
 			allowedChatIds: config.allowedChatIds,
 			envFile: config.bridge.envFile,
+			normalizedOutput: config.normalizedOutput,
 		})
 		log('Bridge enabled, default CLI:', config.bridge.defaultCli)
 

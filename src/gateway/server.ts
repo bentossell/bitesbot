@@ -13,6 +13,7 @@ import { isAuthorized } from './auth.js'
 import type { GatewayConfig } from './config.js'
 import { normalizeMessage } from './normalize.js'
 import { toTelegramMarkdown } from './telegram-markdown.js'
+import { sendNormalizedTelegram } from './telegram-renderer.js'
 import { logToFile } from '../logging/file.js'
 import { isVoiceAttachment, processVoiceAttachment } from './media.js'
 import type {
@@ -99,8 +100,13 @@ const downloadTelegramFile = async (bot: Bot, fileId: string, type: 'photo' | 'd
 	return localPath
 }
 
-const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
+const sendOutboundMessage = async (
+	bot: Bot,
+	payload: OutboundMessage,
+	options?: { normalizedOutput?: boolean },
+) => {
 	const chatId = payload.chatId
+	const normalizedOutputEnabled = options?.normalizedOutput === true
 
 	// Build inline keyboard if provided
 	const reply_markup = payload.inlineButtons
@@ -113,6 +119,13 @@ const sendOutboundMessage = async (bot: Bot, payload: OutboundMessage) => {
 			),
 		}
 		: undefined
+
+	if (normalizedOutputEnabled && payload.structured) {
+		return sendNormalizedTelegram(bot, chatId, payload.structured, {
+			replyToMessageId: payload.replyToMessageId,
+			inlineButtons: payload.inlineButtons,
+		})
+	}
 
 	if (payload.photoUrl) {
 		const caption = payload.caption ?? payload.text
@@ -223,7 +236,9 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			try {
 				const raw = await readBody(req)
 				payload = JSON.parse(raw) as OutboundMessage
-				const response = await sendOutboundMessage(bot, payload)
+				const response = await sendOutboundMessage(bot, payload, {
+					normalizedOutput: config.normalizedOutput,
+				})
 				const sendResponse: SendResponse = {
 					ok: true,
 					messageId: response.message_id,

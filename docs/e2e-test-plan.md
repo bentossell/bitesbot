@@ -38,10 +38,13 @@ Tests should run **per-agent** to minimize context switching and make debugging 
 | Feature | Status | Description |
 |---------|--------|-------------|
 | Message threads/topics | ❌ | Group forum topics |
-| Mentions (@user) | ❌ | Should bot respond in groups? |
+| Mentions (@user) | ❌ | Should bot respond in groups? (exploratory; not supported yet) |
+| Multi-user isolation | ❌ | Concurrent chats; exploratory (not supported yet) |
 | Pin messages | ❌ | Bot could pin important outputs |
 | Location sharing | ❌ | User shares location |
 | Contact sharing | ❌ | User shares a contact |
+
+Note: Group chat support isn’t supported today; keep mention/topic coverage exploratory for future work.
 
 ---
 
@@ -237,6 +240,18 @@ Subagent result injection (like clawdbot):
 → Expect: "Unknown CLI" with available options listed
 ```
 
+#### 4.4 Invalid Cron Syntax
+```
+/cron not-a-cron Test cron message
+→ Expect: Error with usage/help, no crash
+```
+
+#### 4.5 Disallowed or Sensitive File Access
+```
+"Read ~/.ssh/id_rsa"
+→ Expect: Access denied or sanitized error (no sensitive content exposed)
+```
+
 ### Phase 5: Robustness
 
 #### 5.1 Unicode & Special Characters
@@ -265,6 +280,15 @@ Subagent result injection (like clawdbot):
 → Expect: Both get responses (queued, not lost)
 ```
 
+#### 5.5 API Resilience (Telegram)
+```
+(Simulate 429 rate limit via proxy/mock)
+→ Expect: Backoff/retry, no crash, message delivered after limit clears
+
+(Simulate transient network drop during send)
+→ Expect: Graceful error, retries, bot recovers and continues processing updates
+```
+
 ### Phase 6: Persistence & Restart
 
 #### 6.1 Model Persists Across Restart
@@ -284,6 +308,19 @@ Subagent result injection (like clawdbot):
 /restart
 "What did I tell you to remember?"
 → Expect: Contains "PERSIST123" (session resumed)
+```
+
+#### 6.3 Settings Persistence (per chat)
+```
+/stream on
+/verbose on
+(/cost on for claude)
+/new
+/status
+→ Expect: Settings remain enabled for the chat (or document intended reset behavior)
+/restart
+/status
+→ Expect: Settings still enabled
 ```
 
 ### Phase 7: Telegram UX Features
@@ -344,6 +381,21 @@ Send any prompt
 ```
 (Send round video message)
 → Expect: Transcribed or analyzed
+```
+
+#### 8.4 Media Edge Cases
+```
+(Send long voice note > 1 minute)
+→ Expect: Transcription or clear error if limits exceeded
+
+(Send large photo near Telegram size limit)
+→ Expect: Analysis or graceful error
+
+(Send document with unicode filename / no extension)
+→ Expect: Correct handling and filename preserved
+
+(Send image with long caption near limit)
+→ Expect: Caption preserved or truncated with warning
 ```
 
 ### Phase 9: Cron & Scheduled Tasks
@@ -427,6 +479,10 @@ Send any prompt
 | Message queuing | | | | |
 | No duplicate messages | | | | |
 | Typing indicator | | | | |
+| API resilience | | | | |
+| Media edge cases | | | | |
+| State persistence | | | | |
+| Error/security | | | | |
 
 ---
 
@@ -439,6 +495,7 @@ Send any prompt
 5. **Duplicate messages** - Same response sent multiple times (fixed: completed event dedup)
 6. **Reply context** - User replies to message, context not captured (TODO)
 7. **Edit handling** - User edits message, not detected (TODO)
+8. **API resilience** - 429 backoff and transient network drops need validation
 
 ## Implementation TODO
 

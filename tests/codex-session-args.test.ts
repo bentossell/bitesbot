@@ -70,8 +70,6 @@ describe('Codex session args', () => {
 			'--json',
 			'--dangerously-bypass-approvals-and-sandbox',
 			'--skip-git-repo-check',
-			'--cd',
-			'/workdir',
 			'--model',
 			'gpt-5.2-codex',
 			'sess-123',
