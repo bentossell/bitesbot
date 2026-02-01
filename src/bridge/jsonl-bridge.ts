@@ -1199,7 +1199,11 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			}
 			: undefined
 
-		const session = new JsonlSession(chatId, manifest, config.workingDirectory, { envFile: config.envFile, toolExecutor: runPiToolExecutor })
+		const usesPiRpc = manifest.name === 'pi' && manifest.args.some((arg, idx, arr) => arg === '--mode' && arr[idx + 1] === 'rpc')
+		const session = new JsonlSession(chatId, manifest, config.workingDirectory, {
+			envFile: config.envFile,
+			toolExecutor: usesPiRpc ? runPiToolExecutor : undefined,
+		})
 		sessionStore.set(session)
 
 		// Get chat settings dynamically (allows mid-session changes via /stream and /verbose)

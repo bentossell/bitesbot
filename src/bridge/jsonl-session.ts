@@ -616,10 +616,11 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			case 'turn_end': {
 				const role = event.message?.role
 				const hasPendingTools = this.pendingTools.size > 0
+				const text = extractPiText(event.message)
+				const hasText = Boolean(text || this._lastText)
 				log(`[pi-session] turn_end role=${role} pendingTools=${hasPendingTools} completedEmitted=${this._completedEmitted} lastText_len=${this._lastText.length}`)
 				// Only emit completion on assistant turn_end with no pending tools
-				if (role === 'assistant' && !this._completedEmitted && !hasPendingTools) {
-					const text = extractPiText(event.message)
+				if (role === 'assistant' && !this._completedEmitted && !hasPendingTools && hasText) {
 					if (text) this._lastText = text
 					const sessionId = this._resumeToken?.sessionId || 'unknown'
 					this._completedEmitted = true
