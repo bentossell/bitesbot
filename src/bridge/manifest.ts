@@ -13,6 +13,17 @@ const expandHome = (path: string): string => {
 	return path
 }
 
+type CliOverride = { key: string; value: string }
+
+const resolveCliCommandOverride = (cliName: string): CliOverride | null => {
+	const normalized = cliName.toUpperCase().replace(/[^A-Z0-9]/g, '_')
+	const keyed = `TG_GATEWAY_CLI_${normalized}_BIN`
+	const legacy = `TG_GATEWAY_${normalized}_BIN`
+	const value = process.env[keyed] ?? process.env[legacy]
+	if (!value) return null
+	return { key: process.env[keyed] ? keyed : legacy, value }
+}
+
 /**
  * Common CLI installation directories to search.
  * Order matters - first match wins.
@@ -214,6 +225,11 @@ export const loadAllManifests = async (
 	for (const file of yamlFiles) {
 		try {
 			const manifest = await loadManifest(join(adaptersDir, file))
+			const override = resolveCliCommandOverride(manifest.name)
+			if (override) {
+				manifest.command = expandHome(override.value)
+				log(`Using ${manifest.name} CLI override from ${override.key}: ${manifest.command}`)
+			}
 			if (!cliExists(manifest.command)) {
 				logWarn(`Skipping adapter '${manifest.name}': CLI '${manifest.command}' not found`)
 				continue

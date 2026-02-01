@@ -66,6 +66,8 @@ Bridge:
 - `TG_GATEWAY_WORKING_DIR` (default: `process.cwd()`)
 - `TG_GATEWAY_ADAPTERS_DIR` (default: `./adapters`)
 - `TG_GATEWAY_ENV_FILE` (path to shell-style env file, e.g., `~/.secrets`)
+- `TG_GATEWAY_CLI_<NAME>_BIN` (override adapter command path, e.g., `TG_GATEWAY_CLI_PI_BIN=/path/to/pi`)
+- `TG_GATEWAY_<NAME>_BIN` (legacy alias for the above)
 
 Memory:
 
