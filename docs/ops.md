@@ -8,6 +8,10 @@
 - Launchd service: `com.bentossell.bitesbot`
 - Logs: `~/logs/bitesbot.log` and `~/logs/bitesbot.err`
 
+## Test gateway runbook
+
+- See `runbook-test-gateway.md` for starting a non-prod gateway and manual checks.
+
 ## Launchd commands
 
 ```bash
