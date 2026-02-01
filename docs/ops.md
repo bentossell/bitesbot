@@ -11,6 +11,7 @@
 ## Test gateway runbook
 
 - See `runbook-test-gateway.md` for starting a non-prod gateway and manual checks.
+- Quick commands: `pnpm run gateway:test`, `pnpm run gateway:test:stop`, `pnpm run gateway:test:status`
 
 ## Launchd commands
 

@@ -57,6 +57,8 @@ Notes:
 - `TG_GATEWAY_AUTH_TOKEN` (optional)
 - `TG_GATEWAY_ALLOWED_CHAT_IDS` (comma-separated list)
 - `TG_GATEWAY_CONFIG` (override config file path)
+- `TG_GATEWAY_PID_PATH` (override PID file path)
+- `TG_GATEWAY_LOG_DIR` (override internal gateway log directory)
 
 Bridge:
 

@@ -7,45 +7,32 @@ This runbook starts a **test** Telegram gateway on a non-prod port (not 8787), u
 - You have `.env.e2e` with valid `TG_E2E_*` values.
 - You are in the repo root: `/Users/mini/repos/bitesbot`.
 - **Prod** gateway uses port **8787**. Use a different port for test (default in `.env.e2e` is 8790).
+- The test scripts default to port **8788** if `TG_E2E_GATEWAY_PORT` is not set.
 
 ## Start Test Gateway (Foreground)
 
 ```bash
-set -a; source ./.env.e2e; set +a
-
-TG_GATEWAY_CONFIG=/dev/null \
-TG_GATEWAY_BOT_TOKEN="$TG_E2E_BOT_TOKEN" \
-TG_GATEWAY_PORT="$TG_E2E_GATEWAY_PORT" \
-TG_GATEWAY_ALLOWED_CHAT_IDS="$TG_E2E_ALLOWED_CHAT_ID" \
-TG_GATEWAY_AUTH_TOKEN="$TG_E2E_AUTH_TOKEN" \
-TG_GATEWAY_BRIDGE_ENABLED=true \
-TG_GATEWAY_DEFAULT_CLI=pi \
-TG_GATEWAY_WORKING_DIR="/Users/mini/repos/bitesbot" \
-TG_GATEWAY_ADAPTERS_DIR="/Users/mini/repos/bitesbot/adapters" \
-TG_GATEWAY_MEMORY_ENABLED=false \
-pnpm run gateway
+pnpm run gateway:test
 ```
 
 Notes:
 - `TG_GATEWAY_CONFIG=/dev/null` prevents picking up prod config.
 - Foreground run shows live logs in the terminal.
+- Set `TG_GATEWAY_TEST_BUILD=0` to skip rebuilds.
+
+## Convenience commands
+
+```bash
+pnpm run gateway:test
+pnpm run gateway:test:status
+pnpm run gateway:test:logs
+pnpm run gateway:test:stop
+```
 
 ## Start Test Gateway (Background + Logs)
 
 ```bash
-set -a; source ./.env.e2e; set +a
-
-TG_GATEWAY_CONFIG=/dev/null \
-TG_GATEWAY_BOT_TOKEN="$TG_E2E_BOT_TOKEN" \
-TG_GATEWAY_PORT="$TG_E2E_GATEWAY_PORT" \
-TG_GATEWAY_ALLOWED_CHAT_IDS="$TG_E2E_ALLOWED_CHAT_ID" \
-TG_GATEWAY_AUTH_TOKEN="$TG_E2E_AUTH_TOKEN" \
-TG_GATEWAY_BRIDGE_ENABLED=true \
-TG_GATEWAY_DEFAULT_CLI=pi \
-TG_GATEWAY_WORKING_DIR="/Users/mini/repos/bitesbot" \
-TG_GATEWAY_ADAPTERS_DIR="/Users/mini/repos/bitesbot/adapters" \
-TG_GATEWAY_MEMORY_ENABLED=false \
-nohup pnpm run gateway > ~/logs/bitesbot-test.log 2>&1 &
+pnpm run gateway:test:restart
 ```
 
 ## Health Checks
@@ -74,13 +61,29 @@ In Telegram (test bot from `.env.e2e`):
 ## Logs
 
 - Foreground: terminal output.
-- Background: `~/logs/bitesbot-test.log`
+- Background: `~/logs/bitesbot-test.log` (stdout/stderr) + `~/.config/tg-gateway-test/logs/gateway.log` (internal)
 - Gateway file log (errors only): `~/.config/tg-gateway/logs/gateway.log`
 
 ## Stop Test Gateway
 
 ```bash
-pnpm run gateway:stop
+pnpm run gateway:test:stop
+```
+
+## Launchd (Optional)
+
+Install a dedicated test launchd service (auto-restarts on crash):
+
+```bash
+pnpm run gateway:test:launchd:install
+```
+
+Status / restart / uninstall:
+
+```bash
+pnpm run gateway:test:launchd:status
+pnpm run gateway:test:launchd:restart
+pnpm run gateway:test:launchd:uninstall
 ```
 
 If multiple gateways are running, identify the test port and stop that PID:

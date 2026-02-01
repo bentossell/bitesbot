@@ -2,7 +2,18 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-const resolvePidPath = () => join(homedir(), '.config', 'tg-gateway', 'tg-gateway.pid')
+const expandHome = (path: string): string => {
+	if (path.startsWith('~/')) {
+		return join(homedir(), path.slice(2))
+	}
+	return path
+}
+
+const resolvePidPath = () => {
+	const override = process.env.TG_GATEWAY_PID_PATH
+	if (override) return expandHome(override)
+	return join(homedir(), '.config', 'tg-gateway', 'tg-gateway.pid')
+}
 
 export const writePidFile = async (pid: number) => {
 	const pidPath = resolvePidPath()

@@ -4,7 +4,16 @@ import { join } from 'node:path'
 
 type LogLevel = 'info' | 'error'
 
-const logDir = join(homedir(), '.config', 'tg-gateway', 'logs')
+const expandHome = (path: string): string => {
+	if (path.startsWith('~/')) {
+		return join(homedir(), path.slice(2))
+	}
+	return path
+}
+
+const logDir = expandHome(
+	process.env.TG_GATEWAY_LOG_DIR ?? join(homedir(), '.config', 'tg-gateway', 'logs')
+)
 const logFile = join(logDir, 'gateway.log')
 let initialized = false
 
