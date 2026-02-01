@@ -26,13 +26,12 @@ describe('Pi session event handling', () => {
 		return session
 	}
 
-	it('emits completion on turn_end with assistant message', () => {
+	it('turn_end captures text but does not emit completion', () => {
 		const session = createSession()
 		const internals = getSessionInternals(session)
 		
 		// Simulate session start
 		internals._resumeToken = { engine: 'pi', sessionId: 'pi-sess-1' }
-		internals._lastText = 'Hello from Pi'
 		
 		// Simulate turn_end event
 		internals.translateEvent({
@@ -43,36 +42,12 @@ describe('Pi session event handling', () => {
 			}
 		})
 
-		const completedEvent = events.find(e => e.type === 'completed')
-		expect(completedEvent).toBeDefined()
-		expect(completedEvent?.type).toBe('completed')
-		if (completedEvent?.type === 'completed') {
-			expect(completedEvent.answer).toBe('Hello from Pi')
-			expect(completedEvent.sessionId).toBe('pi-sess-1')
-		}
-	})
-
-	it('does not emit completion on turn_end when tools are pending', () => {
-		const session = createSession()
-		const internals = getSessionInternals(session)
-		
-		internals._resumeToken = { engine: 'pi', sessionId: 'pi-sess-1' }
-		internals._lastText = 'Processing...'
-		
-		// Add a pending tool
-		internals.pendingTools.set('tool-1', { name: 'memory_store', input: {} })
-		
-		// Simulate turn_end event
-		internals.translateEvent({
-			type: 'turn_end',
-			message: {
-				role: 'assistant',
-				content: [{ type: 'text', text: 'Processing...' }]
-			}
-		})
-
+		// turn_end should NOT emit completion (wait for agent_end)
 		const completedEvent = events.find(e => e.type === 'completed')
 		expect(completedEvent).toBeUndefined()
+		
+		// But it should capture the text
+		expect(internals._lastText).toBe('Hello from Pi')
 	})
 
 	it('emits completion on agent_end even without lastText', () => {
@@ -120,24 +95,26 @@ describe('Pi session event handling', () => {
 		}
 	})
 
-	it('does not emit duplicate completion from agent_end after turn_end', () => {
+	it('emits completion only on agent_end, not turn_end', () => {
 		const session = createSession()
 		const internals = getSessionInternals(session)
 		
 		internals._resumeToken = { engine: 'pi', sessionId: 'pi-sess-1' }
-		internals._lastText = 'Hello'
 		
-		// First: turn_end
+		// First: turn_end (should capture text but not complete)
 		internals.translateEvent({
 			type: 'turn_end',
 			message: { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] }
 		})
 		
-		// Second: agent_end (should not emit another completion)
+		expect(events.filter(e => e.type === 'completed')).toHaveLength(0)
+		
+		// Second: agent_end (should emit completion with captured text)
 		internals.translateEvent({ type: 'agent_end', messages: [] })
 
 		const completedEvents = events.filter(e => e.type === 'completed')
 		expect(completedEvents).toHaveLength(1)
+		expect(completedEvents[0].type === 'completed' && completedEvents[0].answer).toBe('Hello')
 	})
 
 	it('tracks pending tools correctly during tool execution', () => {

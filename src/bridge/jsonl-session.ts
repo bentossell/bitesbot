@@ -115,7 +115,6 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	private _lastActivity: Date = new Date()
 	private _resumeToken?: ResumeToken
 	private _lastText: string = ''
-	private _completedEmitted: boolean = false
 	private pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
 
 	constructor(
@@ -259,7 +258,6 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 
 		this._state = 'active'
 		this._lastActivity = new Date()
-		this._completedEmitted = false
 
 		this.readline = createInterface({ input: this.process.stdout! })
 		this.readline.on('line', (line) => this.handleLine(line))
@@ -612,52 +610,30 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 				break
 			}
 
-			// Pi: turn end signals completion (but only emit once per run)
+			// Pi: turn end - capture text but don't emit completion (wait for agent_end)
 			case 'turn_end': {
-				const role = event.message?.role
-				const hasPendingTools = this.pendingTools.size > 0
 				const text = extractPiText(event.message)
-				const hasText = Boolean(text || this._lastText)
-				log(`[pi-session] turn_end role=${role} pendingTools=${hasPendingTools} completedEmitted=${this._completedEmitted} lastText_len=${this._lastText.length}`)
-				// Only emit completion on assistant turn_end with no pending tools
-				if (role === 'assistant' && !this._completedEmitted && !hasPendingTools && hasText) {
-					if (text) this._lastText = text
-					const sessionId = this._resumeToken?.sessionId || 'unknown'
-					this._completedEmitted = true
-					log(`[pi-session] Emitting completion from turn_end sessionId=${sessionId}`)
-					this.emit('event', {
-						type: 'completed',
-						sessionId,
-						answer: this._lastText,
-						isError: false,
-					})
-				}
+				if (text) this._lastText = text
 				break
 			}
-			// Pi: agent end signals the session is complete (fallback if turn_end didn't fire)
+			// Pi: agent end signals the session is complete
 			case 'agent_end': {
-				const hasPendingTools = this.pendingTools.size > 0
-				log(`[pi-session] agent_end completedEmitted=${this._completedEmitted} pendingTools=${hasPendingTools} lastText_len=${this._lastText.length}`)
-				// Emit completion on agent_end as fallback (even if lastText is empty)
-				if (!this._completedEmitted && !hasPendingTools) {
-					const sessionId = this._resumeToken?.sessionId || 'unknown'
-					this._completedEmitted = true
-					// Extract text from agent_end messages if available and lastText is empty
-					if (!this._lastText && event.messages?.length) {
-						const lastAssistantMsg = [...event.messages].reverse().find(m => m.role === 'assistant')
-						if (lastAssistantMsg) {
-							const text = extractPiText(lastAssistantMsg)
-							if (text) this._lastText = text
-						}
+				const sessionId = this._resumeToken?.sessionId || 'unknown'
+				// Extract text from agent_end messages if available and lastText is empty
+				if (!this._lastText && event.messages?.length) {
+					const lastAssistantMsg = [...event.messages].reverse().find(m => m.role === 'assistant')
+					if (lastAssistantMsg) {
+						const text = extractPiText(lastAssistantMsg)
+						if (text) this._lastText = text
 					}
-					log(`[pi-session] Emitting completion from agent_end sessionId=${sessionId}`)
-					this.emit('event', {
-						type: 'completed',
-						sessionId,
-						answer: this._lastText || '(no response)',
-						isError: false,
-					})
 				}
+				log(`[pi-session] agent_end emitting completion sessionId=${sessionId} lastText_len=${this._lastText.length}`)
+				this.emit('event', {
+					type: 'completed',
+					sessionId,
+					answer: this._lastText || '(no response)',
+					isError: false,
+				})
 				break
 			}
 		}
