@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename, copyFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { CronJob, CronStore } from './types.js'
 
@@ -15,7 +15,22 @@ export const loadCronStore = async (path: string): Promise<CronStore> => {
 
 export const saveCronStore = async (path: string, store: CronStore): Promise<void> => {
 	await mkdir(dirname(path), { recursive: true })
-	await writeFile(path, JSON.stringify(store, null, 2), 'utf-8')
+	const tmp = `${path}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
+	const json = JSON.stringify(store, null, 2)
+	await writeFile(tmp, json, 'utf-8')
+	try {
+		await rename(tmp, path)
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException | null)?.code
+		if (code !== 'ENOENT') throw err
+		await mkdir(dirname(path), { recursive: true })
+		await writeFile(path, json, 'utf-8')
+	}
+	try {
+		await copyFile(path, `${path}.bak`)
+	} catch {
+		// best-effort
+	}
 }
 
 export const generateId = (): string => {

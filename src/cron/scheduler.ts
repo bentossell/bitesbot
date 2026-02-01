@@ -1,61 +1,18 @@
+import { Cron } from 'croner'
 import type { CronSchedule } from './types.js'
 
-// Simple cron parser for common patterns
-// Supports: "* * * * *" (min hour dom mon dow)
-const parseCronExpr = (expr: string, now: Date): number | null => {
-	const parts = expr.trim().split(/\s+/)
-	if (parts.length !== 5) return null
+const MAX_MISSED_RUNS = 24 * 60
 
-	const [minExpr, hourExpr, domExpr, monExpr, dowExpr] = parts
-
-	// Get current time in timezone (simplified - just use local for now)
-	const current = new Date(now)
-
-	const matchField = (expr: string, value: number, max: number): boolean => {
-		if (expr === '*') return true
-		if (expr.includes(',')) {
-			return expr.split(',').some((p) => matchField(p.trim(), value, max))
-		}
-		if (expr.includes('/')) {
-			const [, step] = expr.split('/')
-			const stepNum = parseInt(step, 10)
-			if (!Number.isFinite(stepNum) || stepNum <= 0) return false
-			return value % stepNum === 0
-		}
-		if (expr.includes('-')) {
-			const [start, end] = expr.split('-').map((n) => parseInt(n, 10))
-			return value >= start && value <= end
-		}
-		return parseInt(expr, 10) === value
+const resolveCronNextRun = (expr: string, tz: string | undefined, now: Date): number | null => {
+	const trimmed = expr.trim()
+	if (!trimmed) return null
+	try {
+		const cron = new Cron(trimmed, { timezone: tz?.trim() || undefined, catch: false })
+		const next = cron.nextRun(now)
+		return next ? next.getTime() : null
+	} catch {
+		return null
 	}
-
-	// Find next matching time (look ahead up to 1 week)
-	const maxIterations = 7 * 24 * 60
-	const candidate = new Date(current)
-	candidate.setSeconds(0, 0)
-	candidate.setMinutes(candidate.getMinutes() + 1)
-
-	for (let i = 0; i < maxIterations; i++) {
-		const min = candidate.getMinutes()
-		const hour = candidate.getHours()
-		const dom = candidate.getDate()
-		const mon = candidate.getMonth() + 1
-		const dow = candidate.getDay()
-
-		if (
-			matchField(minExpr, min, 59) &&
-			matchField(hourExpr, hour, 23) &&
-			matchField(domExpr, dom, 31) &&
-			matchField(monExpr, mon, 12) &&
-			matchField(dowExpr, dow, 6)
-		) {
-			return candidate.getTime()
-		}
-
-		candidate.setMinutes(candidate.getMinutes() + 1)
-	}
-
-	return null
 }
 
 export const calculateNextRun = (schedule: CronSchedule, now: Date = new Date()): number | null => {
@@ -67,7 +24,7 @@ export const calculateNextRun = (schedule: CronSchedule, now: Date = new Date())
 			return now.getTime() + schedule.everyMs
 
 		case 'cron':
-			return parseCronExpr(schedule.expr, now)
+				return resolveCronNextRun(schedule.expr, schedule.tz, now)
 	}
 }
 
@@ -84,55 +41,23 @@ export const findMissedRuns = (
 	if (schedule.kind !== 'cron' || !lastRunAtMs) return []
 
 	const missed: number[] = []
-	const parts = schedule.expr.trim().split(/\s+/)
-	if (parts.length !== 5) return []
+	const expr = schedule.expr.trim()
+	if (!expr) return []
 
-	const [minExpr, hourExpr, domExpr, monExpr, dowExpr] = parts
-
-	const matchField = (expr: string, value: number): boolean => {
-		if (expr === '*') return true
-		if (expr.includes(',')) {
-			return expr.split(',').some((p) => matchField(p.trim(), value))
+	try {
+		const cron = new Cron(expr, { timezone: schedule.tz?.trim() || undefined, catch: false })
+		let cursor = new Date(lastRunAtMs)
+		const nowMs = now.getTime()
+		for (let i = 0; i < MAX_MISSED_RUNS; i++) {
+			const next = cron.nextRun(cursor)
+			if (!next) break
+			const nextMs = next.getTime()
+			if (nextMs >= nowMs) break
+			missed.push(nextMs)
+			cursor = new Date(nextMs + 1)
 		}
-		if (expr.includes('/')) {
-			const [, step] = expr.split('/')
-			const stepNum = parseInt(step, 10)
-			return value % stepNum === 0
-		}
-		if (expr.includes('-')) {
-			const [start, end] = expr.split('-').map((n) => parseInt(n, 10))
-			return value >= start && value <= end
-		}
-		return parseInt(expr, 10) === value
-	}
-
-	// Start from the minute after last run
-	const candidate = new Date(lastRunAtMs)
-	candidate.setSeconds(0, 0)
-	candidate.setMinutes(candidate.getMinutes() + 1)
-
-	const nowMs = now.getTime()
-
-	// Check each minute between last run and now (up to 24 hours max to avoid long loops)
-	const maxIterations = 24 * 60
-	for (let i = 0; i < maxIterations && candidate.getTime() < nowMs; i++) {
-		const min = candidate.getMinutes()
-		const hour = candidate.getHours()
-		const dom = candidate.getDate()
-		const mon = candidate.getMonth() + 1
-		const dow = candidate.getDay()
-
-		if (
-			matchField(minExpr, min) &&
-			matchField(hourExpr, hour) &&
-			matchField(domExpr, dom) &&
-			matchField(monExpr, mon) &&
-			matchField(dowExpr, dow)
-		) {
-			missed.push(candidate.getTime())
-		}
-
-		candidate.setMinutes(candidate.getMinutes() + 1)
+	} catch {
+		return []
 	}
 
 	return missed

@@ -19,6 +19,7 @@ const DEFAULT_MESSAGE = 'Check HEARTBEAT.md and run any scheduled tasks. If noth
 const DEFAULT_CRON_PATH = join(homedir(), '.config', 'tg-gateway', 'cron.json')
 const DEFAULT_RUNS_DIR = join(homedir(), '.config', 'tg-gateway', 'cron-runs')
 const CHECK_INTERVAL_MS = 60_000 // Check every minute
+const MAX_TIMEOUT_MS = 2 ** 31 - 1
 
 export type CronEventType = 'job:due' | 'job:complete' | 'job:error' | 'job:isolated'
 
@@ -41,6 +42,8 @@ export type CronServiceConfig = {
 export class CronService extends EventEmitter<CronServiceEvents> {
 	private store: CronStore = { version: 1, jobs: [] }
 	private timer: NodeJS.Timeout | null = null
+	private running = false
+	private stopped = false
 	private readonly storePath: string
 	private readonly checkIntervalMs: number
 	private pendingHeartbeat: CronJob[] = []
@@ -55,6 +58,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 	}
 
 	async start(): Promise<void> {
+		this.stopped = false
 		this.store = await loadCronStore(this.storePath)
 		log(`[cron] Loaded ${this.store.jobs.length} jobs`)
 
@@ -77,9 +81,12 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 			// Always recalculate next run from cron expression on restart
 			// This ensures we don't miss runs due to stale/incorrect nextRunAtMs values
 			const nextRun = calculateNextRun(job.schedule, now)
-			if (nextRun && nextRun !== job.nextRunAtMs) {
-				log(`[cron] Recalculated next run for "${job.name}": ${new Date(nextRun).toISOString()}`)
-				this.store = updateJob(this.store, job.id, { nextRunAtMs: nextRun })
+			const nextRunAtMs = nextRun ?? undefined
+			if (nextRunAtMs !== job.nextRunAtMs) {
+				if (nextRunAtMs) {
+					log(`[cron] Recalculated next run for "${job.name}": ${new Date(nextRunAtMs).toISOString()}`)
+				}
+				this.store = updateJob(this.store, job.id, { nextRunAtMs })
 			}
 		}
 		await this.save()
@@ -88,21 +95,18 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		for (const jobId of missedJobIds) {
 			const job = findJob(this.store, jobId)
 			if (!job) continue
-			if (job.wakeMode === 'next-heartbeat') {
-				this.pendingHeartbeat.push(job)
-			} else {
-				this.emit('event', { type: 'job:due', job })
-			}
-			this.scheduleNextRun(job)
+			await this.queueDueJob(job)
+			await this.scheduleNextRun(job)
 		}
 
-		this.timer = setInterval(() => this.check(), this.checkIntervalMs)
-		log(`[cron] Started, checking every ${this.checkIntervalMs / 1000}s`)
+		this.armTimer()
+		log(`[cron] Started, max check ${this.checkIntervalMs / 1000}s`)
 	}
 
 	stop(): void {
+		this.stopped = true
 		if (this.timer) {
-			clearInterval(this.timer)
+			clearTimeout(this.timer)
 			this.timer = null
 		}
 		log('[cron] Stopped')
@@ -112,37 +116,80 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		await saveCronStore(this.storePath, this.store)
 	}
 
-	private check(): void {
-		const now = new Date()
-		for (const job of this.store.jobs) {
-			if (!job.enabled) continue
-			if (!isDue(job.nextRunAtMs, now)) continue
+	private nextWakeAtMs(): number | null {
+		const enabled = this.store.jobs.filter((j) => j.enabled && typeof j.nextRunAtMs === 'number')
+		if (enabled.length === 0) return null
+		return enabled.reduce((min, j) => Math.min(min, j.nextRunAtMs as number), enabled[0].nextRunAtMs as number)
+	}
 
-			if (job.wakeMode === 'next-heartbeat') {
-				this.pendingHeartbeat.push(job)
-				this.scheduleNextRun(job)
-			} else if (job.sessionTarget === 'isolated') {
-				// Isolated jobs get their own session with run tracking
-				const runRecord = createRunRecord(job.id, job.name, job.model)
-				this.activeRuns.set(job.id, runRecord)
-				void appendRunRecord(runRecord)
-				this.emit('event', { type: 'job:isolated', job, runRecord })
-				this.scheduleNextRun(job)
-			} else {
-				// Main session jobs (default)
-				this.emit('event', { type: 'job:due', job })
-				this.scheduleNextRun(job)
+	private armTimer(): void {
+		if (this.stopped) return
+		if (this.timer) {
+			clearTimeout(this.timer)
+		}
+		this.timer = null
+		const nextWake = this.nextWakeAtMs()
+		if (!nextWake) return
+		const nowMs = Date.now()
+		const delayFromSchedule = Math.max(nextWake - nowMs, 0)
+		const delay = Math.min(delayFromSchedule, this.checkIntervalMs)
+		const clampedDelay = Math.min(delay, MAX_TIMEOUT_MS)
+		this.timer = setTimeout(() => {
+			void this.check()
+		}, clampedDelay)
+		this.timer.unref?.()
+	}
+
+	private async queueDueJob(job: CronJob): Promise<void> {
+		if (this.stopped) return
+		if (job.wakeMode === 'next-heartbeat') {
+			this.pendingHeartbeat.push(job)
+			return
+		}
+		if (job.sessionTarget === 'isolated') {
+			// Isolated jobs get their own session with run tracking
+			const runRecord = createRunRecord(job.id, job.name, job.model)
+			this.activeRuns.set(job.id, runRecord)
+			try {
+				await appendRunRecord(runRecord)
+			} catch (err) {
+				log(`[cron] Failed to append run record for ${job.id}: ${String(err)}`)
 			}
+			this.emit('event', { type: 'job:isolated', job, runRecord })
+			return
+		}
+		// Main session jobs (default)
+		this.emit('event', { type: 'job:due', job })
+	}
+
+	private async check(): Promise<void> {
+		if (this.stopped) return
+		if (this.running) return
+		this.running = true
+		try {
+			const now = new Date()
+			for (const job of this.store.jobs) {
+				if (!job.enabled) continue
+				if (!isDue(job.nextRunAtMs, now)) continue
+				await this.queueDueJob(job)
+				await this.scheduleNextRun(job, now.getTime())
+			}
+		} catch (err) {
+			log(`[cron] Check failed: ${String(err)}`)
+		} finally {
+			this.running = false
+			this.armTimer()
 		}
 	}
 
-	private scheduleNextRun(job: CronJob): void {
-		const nextRun = calculateNextRun(job.schedule)
+	private async scheduleNextRun(job: CronJob, nowMs: number = Date.now()): Promise<void> {
+		if (this.stopped) return
+		const nextRun = calculateNextRun(job.schedule, new Date(nowMs))
 		this.store = updateJob(this.store, job.id, {
 			nextRunAtMs: nextRun ?? undefined,
-			lastRunAtMs: Date.now(),
+			lastRunAtMs: nowMs,
 		})
-		void this.save()
+		await this.save()
 	}
 
 	// Called by bridge when a heartbeat cycle runs
@@ -175,6 +222,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		}
 		this.store = addJob(this.store, job)
 		await this.save()
+		this.armTimer()
 		log(`[cron] Added job: ${job.name} (${job.id})${job.sessionTarget === 'isolated' ? ' [isolated]' : ''}`)
 		return job
 	}
@@ -184,6 +232,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		if (!job) return false
 		this.store = removeJob(this.store, id)
 		await this.save()
+		this.armTimer()
 		log(`[cron] Removed job: ${job.name} (${id})`)
 		return true
 	}
@@ -195,14 +244,16 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 		const nextRun = nextRunCalc !== null ? nextRunCalc : undefined
 		this.store = updateJob(this.store, id, { enabled, nextRunAtMs: nextRun })
 		await this.save()
+		this.armTimer()
 		return true
 	}
 
 	async run(id: string): Promise<CronJob | null> {
 		const job = findJob(this.store, id)
 		if (!job) return null
-		this.emit('event', { type: 'job:due', job })
-		this.scheduleNextRun(job)
+		await this.queueDueJob(job)
+		await this.scheduleNextRun(job)
+		this.armTimer()
 		return job
 	}
 
