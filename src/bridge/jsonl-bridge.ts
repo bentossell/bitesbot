@@ -1,7 +1,8 @@
 import WebSocket from 'ws'
 import type { GatewayEvent, IncomingMessage, OutboundMessage, SendResponse } from '../protocol/types.js'
 import { readFile } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { type CLIManifest, loadAllManifests } from './manifest.js'
 import {
 	JsonlSession,
@@ -138,6 +139,13 @@ const isLaunchdEnv = (): boolean => {
 	const flag = process.env.TG_GATEWAY_LAUNCHD?.toLowerCase()
 	if (flag && ['1', 'true', 'yes'].includes(flag)) return true
 	return Boolean(process.env.TG_GATEWAY_LAUNCHD_LABEL || process.env.TG_GATEWAY_LAUNCHD_PLIST)
+}
+
+const resolveRepoRoot = (): string => {
+	const override = process.env.TG_GATEWAY_REPO_DIR
+	if (override) return override
+	const currentDir = dirname(fileURLToPath(import.meta.url))
+	return resolve(currentDir, '..', '..')
 }
 
 const spawnDetached = (command: string, args: string[], cwd: string) => {
@@ -340,7 +348,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 				const script = isLaunchdEnv()
 					? 'gateway:launchd:restart:build'
 					: 'gateway:restart:build'
-				spawnDetached('pnpm', ['run', script], workingDirectory)
+				spawnDetached('pnpm', ['run', script], resolveRepoRoot())
 			} catch (err) {
 				releaseUpdateLock()
 				logError('[jsonl-bridge] Failed to spawn update process:', err)
