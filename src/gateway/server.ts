@@ -120,6 +120,16 @@ const sendOutboundMessage = async (
 		}
 		: undefined
 
+	if (payload.editMessageId) {
+		if (!payload.text) {
+			throw new Error('text is required when editing a message')
+		}
+		return bot.api.editMessageText(chatId, payload.editMessageId, toTelegramMarkdown(payload.text), {
+			parse_mode: 'MarkdownV2',
+			reply_markup,
+		})
+	}
+
 	if (normalizedOutputEnabled && payload.structured) {
 		return sendNormalizedTelegram(bot, chatId, payload.structured, {
 			replyToMessageId: payload.replyToMessageId,
@@ -239,13 +249,16 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 				const response = await sendOutboundMessage(bot, payload, {
 					normalizedOutput: config.normalizedOutput,
 				})
+				const messageId = typeof response === 'object' && response && 'message_id' in response
+					? response.message_id
+					: payload.editMessageId
 				const sendResponse: SendResponse = {
 					ok: true,
-					messageId: response.message_id,
+					messageId,
 				}
 				broadcast({
 					type: 'message.sent',
-					payload: { chatId: payload.chatId, messageId: response.message_id },
+					payload: { chatId: payload.chatId, messageId },
 				})
 				sendJson(res, 200, sendResponse)
 			} catch (error) {

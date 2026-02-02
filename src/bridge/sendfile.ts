@@ -1,5 +1,11 @@
 export type SendfileCommand = { path: string; caption?: string }
 
+export const stripSendfileCommands = (text: string, options?: { trim?: boolean }): string => {
+	const pattern = /\[Sendfile:\s*([^\]]+)\](?:\s*\n*(?:Caption:\s*([^\n]+))?)?/gi
+	const stripped = text.replace(pattern, '')
+	return options?.trim === false ? stripped : stripped.trim()
+}
+
 export const extractSendfileCommands = (text: string): { files: SendfileCommand[]; remainingText: string } => {
 	const pattern = /\[Sendfile:\s*([^\]]+)\](?:\s*\n*(?:Caption:\s*([^\n]+))?)?/gi
 	const files: SendfileCommand[] = []
@@ -11,7 +17,7 @@ export const extractSendfileCommands = (text: string): { files: SendfileCommand[
 		files.push({ path: filePath, caption })
 	}
 
-	const remainingText = text.replace(pattern, '').trim()
+	const remainingText = stripSendfileCommands(text)
 
 	return { files, remainingText }
 }

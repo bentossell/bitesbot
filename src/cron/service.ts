@@ -212,6 +212,7 @@ export class CronService extends EventEmitter<CronServiceEvents> {
 			schedule: input.schedule,
 			message: input.message ?? DEFAULT_MESSAGE,
 			wakeMode: input.wakeMode ?? 'now',
+			steps: input.steps,
 			createdAtMs: Date.now(),
 			nextRunAtMs: nextRun !== null ? nextRun : undefined,
 			sessionTarget: input.sessionTarget,

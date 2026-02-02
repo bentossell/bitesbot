@@ -14,6 +14,29 @@ export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high'
 /** Delivery method for reminder notifications */
 export type ReminderDelivery = 'telegram' | 'email' | 'both'
 
+export type CronJobStep =
+	| {
+			id: string
+			action: 'read_file'
+			path: string
+			maxChars?: number
+			required?: boolean
+	  }
+	| {
+			id: string
+			action: 'expect_output'
+			pattern: string
+			flags?: string
+			description?: string
+	  }
+
+export type CronOutputExpectation = {
+	id: string
+	pattern: string
+	flags?: string
+	description?: string
+}
+
 export type CronJob = {
 	id: string
 	name: string
@@ -21,6 +44,7 @@ export type CronJob = {
 	schedule: CronSchedule
 	message: string
 	wakeMode: WakeMode
+	steps?: CronJobStep[]
 	createdAtMs: number
 	nextRunAtMs?: number
 	lastRunAtMs?: number
@@ -52,6 +76,7 @@ export type CronJobCreate = {
 	schedule: CronSchedule
 	message?: string
 	wakeMode?: WakeMode
+	steps?: CronJobStep[]
 	sessionTarget?: SessionTarget
 	model?: string
 	thinking?: ThinkingLevel

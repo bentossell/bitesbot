@@ -2,6 +2,8 @@ export { CronService, type CronEvent, type CronServiceConfig } from './service.j
 export {
 	type CronJob,
 	type CronJobCreate,
+	type CronJobStep,
+	type CronOutputExpectation,
 	type CronSchedule,
 	type WakeMode,
 	type SessionTarget,

@@ -36,6 +36,8 @@ export type InlineButton = {
 export type OutboundMessage = {
 	chatId: number | string
 	text?: string
+	/** Edit an existing Telegram message instead of sending a new one */
+	editMessageId?: number
 	structured?: NormalizedResponse
 	photoUrl?: string
 	documentUrl?: string

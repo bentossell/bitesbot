@@ -333,6 +333,16 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 	}
 
 	private translateEvent(event: JsonlEvent): void {
+		const shouldDebugPi = process.env.TG_GATEWAY_DEBUG_PI_EVENTS === '1' && this.cli === 'pi'
+		const formatPreview = (value: string, max = 120) => {
+			const compact = value.replace(/\s+/g, ' ').trim()
+			return compact.length > max ? `${compact.slice(0, max)}…` : compact
+		}
+		const logPiDebug = (message: string, data?: Record<string, unknown>) => {
+			if (!shouldDebugPi) return
+			const suffix = data ? ` ${JSON.stringify(data)}` : ''
+			log(`[pi-debug] ${message}${suffix}`)
+		}
 		const extractPiText = (message?: PiMessage): string | undefined => {
 			if (!message?.content || !Array.isArray(message.content)) return undefined
 			const text = message.content
@@ -508,6 +518,11 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			case 'message_update':
 				if (event.assistantMessageEvent?.type === 'text_delta' && typeof event.assistantMessageEvent.delta === 'string') {
 					this._lastText = `${this._lastText}${event.assistantMessageEvent.delta}`
+					logPiDebug('message_update', {
+						deltaLen: event.assistantMessageEvent.delta.length,
+						delta: formatPreview(event.assistantMessageEvent.delta),
+						totalLen: this._lastText.length,
+					})
 					this.emit('event', { type: 'text', text: event.assistantMessageEvent.delta })
 				}
 				break
@@ -516,6 +531,9 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			case 'message_end':
 				if (event.message?.role === 'assistant') {
 					const text = extractPiText(event.message)
+					if (text) {
+						logPiDebug('message_end', { textLen: text.length, text: formatPreview(text) })
+					}
 					if (text) this._lastText = text
 				}
 				break
@@ -613,6 +631,9 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 			// Pi: turn end - capture text but don't emit completion (wait for agent_end)
 			case 'turn_end': {
 				const text = extractPiText(event.message)
+				if (text) {
+					logPiDebug('turn_end', { textLen: text.length, text: formatPreview(text) })
+				}
 				if (text) this._lastText = text
 				break
 			}
@@ -627,6 +648,11 @@ export class JsonlSession extends EventEmitter<JsonlSessionEvents> {
 						if (text) this._lastText = text
 					}
 				}
+				logPiDebug('agent_end', {
+					messages: event.messages?.length ?? 0,
+					lastTextLen: this._lastText.length,
+					lastText: this._lastText ? formatPreview(this._lastText) : undefined,
+				})
 				log(`[pi-session] agent_end emitting completion sessionId=${sessionId} lastText_len=${this._lastText.length}`)
 				this.emit('event', {
 					type: 'completed',

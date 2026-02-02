@@ -1,5 +1,7 @@
 import WebSocket from 'ws'
-import type { GatewayEvent, IncomingMessage, OutboundMessage } from '../protocol/types.js'
+import type { GatewayEvent, IncomingMessage, OutboundMessage, SendResponse } from '../protocol/types.js'
+import { readFile } from 'node:fs/promises'
+import { isAbsolute, join } from 'node:path'
 import { type CLIManifest, loadAllManifests } from './manifest.js'
 import {
 	JsonlSession,
@@ -12,7 +14,7 @@ import { createPersistentSessionStore, type PersistentSessionStore } from './ses
 import { syncSessionToMemory } from './memory-sync.js'
 import { maybeAutoFlushSessionToMemory } from './auto-memory-flush.js'
 import { CronService, parseScheduleArg } from '../cron/index.js'
-import type { CronJob } from '../cron/types.js'
+import type { CronJob, CronOutputExpectation } from '../cron/types.js'
 import { logToFile, log, logError, logWarn } from '../logging/file.js'
 import {
 	subagentRegistry,
@@ -67,7 +69,7 @@ import { getRelativePath } from '../workspace/path-utils.js'
 import { buildBootContext } from '../workspace/boot-context.js'
 import type { Skill } from '../skills/index.js'
 import { normalizeBridgeEvents } from './normalize.js'
-import { extractSendfileCommands } from './sendfile.js'
+import { extractSendfileCommands, stripSendfileCommands } from './sendfile.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -646,7 +648,7 @@ const sendToGateway = async (
 	baseUrl: string,
 	authToken: string | undefined,
 	payload: OutboundMessage
-) => {
+): Promise<number | undefined> => {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' }
 	if (authToken) {
 		headers.Authorization = `Bearer ${authToken}`
@@ -666,11 +668,15 @@ const sendToGateway = async (
 				chatId: payload.chatId,
 				body: body.slice(0, 1000),
 			}).catch(() => {})
+			return undefined
 		}
+		const parsed = (await response.json().catch(() => undefined)) as SendResponse | undefined
+		return parsed?.messageId
 	} catch (err) {
 		logError(`[jsonl-bridge] Failed to send message:`, err)
 		const message = err instanceof Error ? err.message : 'unknown error'
 		void logToFile('error', 'bridge send failed', { error: message, chatId: payload.chatId }).catch(() => {})
+		return undefined
 	}
 }
 
@@ -1031,8 +1037,13 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	const ws = new WebSocket(wsEndpoint, { headers })
 	const normalizedOutputEnabled = config.normalizedOutput === true || process.env.TG_GATEWAY_NORMALIZED_OUTPUT === '1'
 
-	const send = (chatId: number | string, text: string) =>
+	const send = async (chatId: number | string, text: string): Promise<void> => {
+		await sendToGateway(config.gatewayUrl, config.authToken, { chatId, text })
+	}
+	const sendWithId = (chatId: number | string, text: string) =>
 		sendToGateway(config.gatewayUrl, config.authToken, { chatId, text })
+	const sendEdit = (chatId: number | string, messageId: number, text: string) =>
+		sendToGateway(config.gatewayUrl, config.authToken, { chatId, text, editMessageId: messageId })
 
 	const typing = (chatId: number | string) =>
 		sendTyping(config.gatewayUrl, config.authToken, chatId)
@@ -1047,6 +1058,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 	type MessageContext = {
 		source?: 'user' | 'cron' | 'memory-tool' | 'session-tool'
 		cronJobId?: string
+		cronExpectations?: CronOutputExpectation[]
 		memoryToolDepth?: number
 		sessionToolDepth?: number
 		isPrivateChat?: boolean
@@ -1212,8 +1224,14 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		let currentSessionId: string | undefined
 		const taskRunByToolId = new Map<string, string>()
 		let streamBuffer = ''
-		let lastStreamedText = ''
+		let lastStreamedBuffer = ''
+		let streamedTextForEdit = ''
+		let streamedTextForAppend = ''
+		let streamMessageId: number | undefined
+		let streamTruncated = false
 		let streamTimer: ReturnType<typeof setTimeout> | null = null
+		let streamFlushChain: Promise<void> = Promise.resolve()
+		const streamUsesEdits = true
 		const STREAM_MIN_CHARS = 800
 		const STREAM_IDLE_MS = 1500
 
@@ -1221,7 +1239,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		const pendingFiles: Array<{ path: string; caption?: string }> = []
 		const normalizationEvents: BridgeEvent[] = []
 
-		const flushStreamBuffer = async (force = false) => {
+		const flushStreamBufferInternal = async (force = false) => {
 			if (streamTimer) {
 				clearTimeout(streamTimer)
 				streamTimer = null
@@ -1229,13 +1247,15 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			if (!streamBuffer || (!force && streamBuffer.length < STREAM_MIN_CHARS)) return
 			if (isSpawnDirectiveCandidate(streamBuffer)) return
 
-			const delta = streamBuffer.startsWith(lastStreamedText)
-				? streamBuffer.slice(lastStreamedText.length)
+			const delta = streamBuffer.startsWith(lastStreamedBuffer)
+				? streamBuffer.slice(lastStreamedBuffer.length)
 				: streamBuffer
 			if (!delta.trim()) return
+			if (lastStreamedBuffer && lastStreamedBuffer.startsWith(streamBuffer)) return
 
 			// Extract any [Sendfile:] commands from streaming delta
-			const { files, remainingText } = extractSendfileCommands(delta)
+			const { files } = extractSendfileCommands(delta)
+			const deltaText = stripSendfileCommands(delta, { trim: false })
 
 			// Queue files to send after completion (don't send mid-stream)
 			for (const file of files) {
@@ -1244,12 +1264,54 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				}
 			}
 
-			const toSend = remainingText.trim()
-			if (toSend) {
-				await send(chatId, toSend)
+			if (streamUsesEdits) {
+				const { remainingText: fullRemainingText } = extractSendfileCommands(streamBuffer)
+				const toSend = fullRemainingText.trim()
+				if (!toSend) {
+					lastStreamedBuffer = streamBuffer
+					return
+				}
+				if (streamMessageId && toSend === streamedTextForEdit) {
+					lastStreamedBuffer = streamBuffer
+					return
+				}
+				const chunks = splitMessage(toSend)
+				const primary = chunks[0] ?? ''
+				const truncated = chunks.length > 1
+				if (!primary.trim()) {
+					lastStreamedBuffer = streamBuffer
+					return
+				}
+				if (streamMessageId) {
+					await sendEdit(chatId, streamMessageId, primary)
+				} else {
+					streamMessageId = await sendWithId(chatId, primary)
+				}
+				streamedTextForEdit = primary
+				streamTruncated = truncated
+				lastStreamedBuffer = streamBuffer
+				return
 			}
 
-			lastStreamedText = streamBuffer
+			const toSend = deltaText
+			if (!toSend.trim()) {
+				lastStreamedBuffer = streamBuffer
+				return
+			}
+			const chunks = splitMessage(toSend)
+			for (const chunk of chunks) {
+				await send(chatId, chunk)
+			}
+			streamedTextForAppend += toSend
+			lastStreamedBuffer = streamBuffer
+		}
+
+		const flushStreamBuffer = (force = false) => {
+			streamFlushChain = streamFlushChain.then(
+				() => flushStreamBufferInternal(force),
+				() => flushStreamBufferInternal(force)
+			)
+			return streamFlushChain
 		}
 
 		const scheduleStreamFlush = () => {
@@ -1354,10 +1416,16 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 							clearTimeout(streamTimer)
 							streamTimer = null
 						}
+						const expectationError = !evt.isError
+							? validateCronExpectations(evt.answer ?? '', context?.cronExpectations)
+							: undefined
 						if (context?.cronJobId && !cronMarked) {
-							const errorMessage = evt.isError ? (evt.answer || 'error') : undefined
+							const errorMessage = evt.isError ? (evt.answer || 'error') : expectationError
 							cronService.markComplete(context.cronJobId, errorMessage)
 							cronMarked = true
+						}
+						if (expectationError) {
+							await send(chatId, `❌ Cron validation failed: ${expectationError}`)
 						}
 						const assistantSpawn = evt.answer ? parseAssistantSpawnCommand(evt.answer) : null
 						if (!assistantSpawn && getSettings().streaming) {
@@ -1518,32 +1586,57 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 							}
 
 							// Send remaining text (if any, and not already streamed)
-							if (textToSend) {
-								if (settings.streaming) {
-									const trimmed = textToSend.trim()
-									if (!trimmed) {
-										// nothing to send
-									} else if (lastStreamedText && trimmed.startsWith(lastStreamedText)) {
-										const delta = trimmed.slice(lastStreamedText.length).trim()
-										if (delta) {
-											const chunks = splitMessage(delta)
+						if (textToSend) {
+							if (settings.streaming) {
+								const fullText = textToSend
+								if (!fullText.trim()) {
+									// nothing to send
+								} else if (streamUsesEdits && streamMessageId) {
+									const trimmed = fullText.trim()
+									if (streamTruncated) {
+										if (trimmed.startsWith(streamedTextForEdit)) {
+											const remainder = trimmed.slice(streamedTextForEdit.length).trim()
+											if (remainder) {
+												const chunks = splitMessage(remainder)
+												for (const chunk of chunks) {
+													await send(chatId, chunk)
+												}
+											}
+										} else if (trimmed !== streamedTextForEdit) {
+											const chunks = splitMessage(trimmed)
 											for (const chunk of chunks) {
 												await send(chatId, chunk)
 											}
 										}
-									} else if (!lastStreamedText || trimmed !== lastStreamedText) {
-										const chunks = splitMessage(trimmed)
+									}
+								} else if (!streamUsesEdits) {
+									if (streamedTextForAppend && fullText.startsWith(streamedTextForAppend)) {
+										const remainder = fullText.slice(streamedTextForAppend.length)
+										if (remainder.trim()) {
+											const chunks = splitMessage(remainder)
+											for (const chunk of chunks) {
+												await send(chatId, chunk)
+											}
+										}
+									} else if (!streamedTextForAppend || fullText !== streamedTextForAppend) {
+										const chunks = splitMessage(fullText)
 										for (const chunk of chunks) {
 											await send(chatId, chunk)
 										}
 									}
 								} else {
-									const chunks = splitMessage(textToSend)
+									const chunks = splitMessage(fullText)
 									for (const chunk of chunks) {
 										await send(chatId, chunk)
 									}
 								}
+							} else {
+								const chunks = splitMessage(textToSend)
+								for (const chunk of chunks) {
+									await send(chatId, chunk)
+								}
 							}
+						}
 						}
 					}
 					if (evt.cost) {
@@ -1600,11 +1693,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		if (!text && !attachments?.length) return
 		const raw = typeof message.raw === 'object' && message.raw ? (message.raw as Record<string, unknown>) : undefined
 		const cronJobId = raw?.cron === true && typeof raw.jobId === 'string' ? raw.jobId : undefined
+		const cronExpectations = cronJobId ? parseCronExpectations(raw?.cronExpectations) : undefined
 		const chat = typeof raw?.chat === 'object' && raw.chat ? (raw.chat as Record<string, unknown>) : undefined
 		const chatType = typeof chat?.type === 'string' ? chat.type : undefined
 		const isPrivateChat = chatType === 'private'
 		const context: MessageContext | undefined = cronJobId
-			? { source: 'cron', cronJobId, isPrivateChat }
+			? { source: 'cron', cronJobId, cronExpectations, isPrivateChat }
 			: { isPrivateChat }
 		if (!context?.cronJobId) {
 			void triggerHeartbeat()
@@ -1785,22 +1879,126 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		log('[jsonl-bridge] Connected to gateway')
 	})
 
+	const DEFAULT_STEP_MAX_CHARS = 8000
+
+	type CronStepPlan = {
+		preamble?: string
+		expectations: CronOutputExpectation[]
+		errors: string[]
+	}
+
+	const truncateStepContent = (text: string, maxChars: number): string => {
+		if (text.length <= maxChars) return text
+		const clipped = text.slice(0, maxChars)
+		return `${clipped}\n...[truncated ${text.length - maxChars} chars]...`
+	}
+
+	const formatReadFileEntry = (id: string, path: string, content: string): string => {
+		return [`### ${id} (read_file ${path})`, '```', content, '```'].join('\n')
+	}
+
+	const buildCronStepPlan = async (job: CronJob, workingDirectory: string): Promise<CronStepPlan> => {
+		if (!job.steps?.length) return { expectations: [], errors: [] }
+		const sections: string[] = []
+		const expectations: CronOutputExpectation[] = []
+		const errors: string[] = []
+		for (const step of job.steps) {
+			switch (step.action) {
+				case 'read_file': {
+					const maxChars = step.maxChars ?? DEFAULT_STEP_MAX_CHARS
+					const resolvedPath = isAbsolute(step.path) ? step.path : join(workingDirectory, step.path)
+					try {
+						const raw = await readFile(resolvedPath, 'utf-8')
+						const content = truncateStepContent(raw.trimEnd(), maxChars)
+						sections.push(formatReadFileEntry(step.id, resolvedPath, content))
+					} catch (err) {
+						const message = `step ${step.id} failed to read ${resolvedPath}: ${String(err)}`
+						sections.push(`### ${step.id} (read_file ${resolvedPath})\nERROR: ${message}`)
+						if (step.required ?? true) errors.push(message)
+					}
+					break
+				}
+				case 'expect_output':
+					expectations.push({
+						id: step.id,
+						pattern: step.pattern,
+						flags: step.flags,
+						description: step.description,
+					})
+					break
+			}
+		}
+		const preamble = sections.length
+			? ['CRON STEP RESULTS (read-only):', ...sections].join('\n\n')
+			: undefined
+		return { preamble, expectations, errors }
+	}
+
+	const validateCronExpectations = (
+		text: string,
+		expectations?: CronOutputExpectation[]
+	): string | undefined => {
+		if (!expectations?.length) return undefined
+		if (!text) return `missing output for ${expectations[0].description ?? expectations[0].id}`
+		for (const expectation of expectations) {
+			let matcher: RegExp
+			try {
+				matcher = new RegExp(expectation.pattern, expectation.flags)
+			} catch (err) {
+				return `invalid expectation pattern for ${expectation.id}: ${String(err)}`
+			}
+			if (!matcher.test(text)) {
+				return `missing expected output for ${expectation.description ?? expectation.id}`
+			}
+		}
+		return undefined
+	}
+
+	const parseCronExpectations = (raw: unknown): CronOutputExpectation[] | undefined => {
+		if (!Array.isArray(raw)) return undefined
+		const expectations: CronOutputExpectation[] = []
+		for (const item of raw) {
+			if (!item || typeof item !== 'object') continue
+			const record = item as Record<string, unknown>
+			if (typeof record.id !== 'string' || typeof record.pattern !== 'string') continue
+			expectations.push({
+				id: record.id,
+				pattern: record.pattern,
+				flags: typeof record.flags === 'string' ? record.flags : undefined,
+				description: typeof record.description === 'string' ? record.description : undefined,
+			})
+		}
+		return expectations.length ? expectations : undefined
+	}
+
 	const runCronJobMain = async (job: CronJob): Promise<void> => {
 		if (!primaryChatId) {
 			log('[jsonl-bridge] Cron job due but no primary chat set')
 			return
 		}
 		const targetChatId = primaryChatId
+		const stepPlan = await buildCronStepPlan(job, config.workingDirectory)
+		if (stepPlan.errors.length) {
+			const errorMessage = stepPlan.errors.join('; ')
+			cronService.markComplete(job.id, errorMessage)
+			await send(targetChatId, `❌ Cron failed: ${job.name}\n${errorMessage}`)
+			return
+		}
+		const prompt = stepPlan.preamble ? `${stepPlan.preamble}\n\n${job.message}` : job.message
 		log(`[jsonl-bridge] Cron job triggered: ${job.name}`)
 		await send(targetChatId, `⏰ Cron: ${job.name}`)
 		void handleMessage({
 			id: `cron-${Date.now()}`,
 			chatId: targetChatId,
-			text: job.message,
+			text: prompt,
 			userId: 'cron',
 			messageId: 0,
 			timestamp: new Date().toISOString(),
-			raw: { cron: true, jobId: job.id },
+			raw: {
+				cron: true,
+				jobId: job.id,
+				cronExpectations: stepPlan.expectations.length ? stepPlan.expectations : undefined,
+			},
 		})
 	}
 
@@ -1810,6 +2008,13 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			return
 		}
 		const targetChatId = primaryChatId
+		const stepPlan = await buildCronStepPlan(job, config.workingDirectory)
+		if (stepPlan.errors.length) {
+			const errorMessage = stepPlan.errors.join('; ')
+			await cronService.markIsolatedComplete(job.id, undefined, errorMessage)
+			await send(targetChatId, `❌ Cron (isolated) failed: ${job.name}\n${errorMessage}`)
+			return
+		}
 
 		const manifest = manifests.get(config.defaultCli)
 		if (!manifest) {
@@ -1829,9 +2034,12 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 			const finish = async (summary?: string, error?: string) => {
 				if (completed) return
 				completed = true
-				await cronService.markIsolatedComplete(job.id, summary, error)
-				if (error) {
-					await send(targetChatId, `❌ Cron (isolated) failed: ${job.name}\n${error}`)
+				const expectationError = error
+					? error
+					: validateCronExpectations(summary ?? '', stepPlan.expectations)
+				await cronService.markIsolatedComplete(job.id, expectationError ? undefined : summary, expectationError)
+				if (expectationError) {
+					await send(targetChatId, `❌ Cron (isolated) failed: ${job.name}\n${expectationError}`)
 				} else if (summary) {
 					await send(targetChatId, `✅ Cron (isolated) complete: ${job.name}\n\n${summary}`)
 				} else {
@@ -1862,7 +2070,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					}
 				})
 
-				session.run(job.message, undefined, { model: resolveModelForCli(config.defaultCli, modelOverride) })
+			const prompt = stepPlan.preamble ? `${stepPlan.preamble}\n\n${job.message}` : job.message
+			session.run(prompt, undefined, { model: resolveModelForCli(config.defaultCli, modelOverride) })
 			})
 		})
 	}
