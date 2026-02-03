@@ -1,7 +1,8 @@
 import WebSocket from 'ws'
 import type { GatewayEvent, IncomingMessage, OutboundMessage, SendResponse } from '../protocol/types.js'
-import { readFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { readFile, stat } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { type CLIManifest, loadAllManifests } from './manifest.js'
 import {
@@ -70,7 +71,7 @@ import { getRelativePath } from '../workspace/path-utils.js'
 import { buildBootContext } from '../workspace/boot-context.js'
 import type { Skill } from '../skills/index.js'
 import { normalizeBridgeEvents } from './normalize.js'
-import { extractSendfileCommands, stripSendfileCommands } from './sendfile.js'
+import { extractSendfileCommands, stripSendfileCommands, type SendfileCommand } from './sendfile.js'
 
 export type BridgeConfig = {
 	gatewayUrl: string
@@ -250,6 +251,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 			'/cron <expr> <message> - schedule a cron job',
 			'/crons - list cron jobs',
 			'/remind <time> <message> - schedule a reminder',
+			'/prebrief [event] - generate meeting pre-brief',
 			'/stop - terminate the current session',
 			'/interrupt - stop current task and continue queue',
 			'/restart - restart the gateway',
@@ -649,6 +651,42 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		return { handled: true, response: `Unknown cron command. Usage:\n/cron list\n/cron add "name" every 30m\n/cron add "name" cron "0 9 * * *"\n/cron remove <id>\n/cron run <id>\n/cron enable <id>\n/cron disable <id>` }
 	}
 
+	// /prebrief command - generate meeting pre-briefs
+	if (trimmed.startsWith('/prebrief')) {
+		const { createPrebrief, listTodayEvents } = await import('./prebrief.js')
+		const query = trimmed.slice(9).trim()
+		
+		if (!query) {
+			// No argument - list today's events
+			const list = await listTodayEvents()
+			return { handled: true, response: list }
+		}
+		
+		// Generate prebrief for specified event
+		const result = await createPrebrief(query)
+		
+		if (!result.success) {
+			return { handled: true, response: result.error || 'Failed to generate prebrief.' }
+		}
+		
+		// Format success response
+		const time = new Date(result.event!.start).toLocaleTimeString('en-GB', {
+			hour: '2-digit',
+			minute: '2-digit',
+		})
+		const response = [
+			`✅ Pre-brief generated for "${result.event!.summary}" at ${time}`,
+			'',
+			`📄 Saved to: ${result.filePath}`,
+			'',
+			'---',
+			'',
+			result.prebrief,
+		].join('\n')
+		
+		return { handled: true, response }
+	}
+
 	return { handled: false }
 }
 
@@ -746,6 +784,111 @@ const sendFileToGateway = async (
 		void logToFile('error', 'bridge send file failed', { error: message, chatId, filePath }).catch(() => {})
 		return false
 	}
+}
+
+const FILE_ATTACHMENT_INSTRUCTIONS = [
+	'File attachments:',
+	'If you create a file and want it sent as a Telegram attachment, include a line exactly:',
+	'[Sendfile: /absolute/path/to/file]',
+	'Optional next line: Caption: <text>',
+	'Auto-attach only scans ./tmp, ./out, ./output, ./artifacts, or the OS temp directory; [Sendfile] is most reliable.',
+].join('\n')
+
+const AUTO_ATTACH_ALLOWED_DIRS = ['tmp', 'out', 'output', 'artifacts']
+const AUTO_ATTACH_MAX_BYTES = 15 * 1024 * 1024
+
+const trimPathToken = (value: string): string =>
+	value.replace(/^[('"`]+|[)\]}'"`,.;:!?]+$/g, '')
+
+const resolveAttachmentPath = (rawPath: string, workingDirectory: string): string | null => {
+	let cleaned = rawPath.trim()
+	if (!cleaned) return null
+	if (cleaned.startsWith('file://')) {
+		cleaned = cleaned.slice('file://'.length)
+	}
+	cleaned = trimPathToken(cleaned)
+	if (!cleaned) return null
+	if (cleaned.startsWith('~/')) {
+		cleaned = join(homedir(), cleaned.slice(2))
+	}
+	if (!isAbsolute(cleaned)) {
+		cleaned = resolve(workingDirectory, cleaned)
+	}
+	return cleaned
+}
+
+const buildAutoAttachRoots = (workingDirectory: string): string[] => {
+	const roots = [tmpdir()]
+	for (const dir of AUTO_ATTACH_ALLOWED_DIRS) {
+		roots.push(resolve(workingDirectory, dir))
+	}
+	return roots
+}
+
+const isWithinAllowedRoots = (filePath: string, roots: string[]): boolean => {
+	const resolvedPath = resolve(filePath)
+	for (const root of roots) {
+		const resolvedRoot = resolve(root)
+		if (resolvedPath === resolvedRoot) return true
+		const rootWithSep = resolvedRoot.endsWith(sep) ? resolvedRoot : `${resolvedRoot}${sep}`
+		if (resolvedPath.startsWith(rootWithSep)) return true
+	}
+	return false
+}
+
+const collectPathCandidates = (text: string): string[] => {
+	const candidates = new Set<string>()
+	const directPattern = /(?:^|[\s(])((?:~\/|\.{1,2}\/|\/)[^\s)\]}'"`]+)/g
+	let match: RegExpExecArray | null
+	while ((match = directPattern.exec(text)) !== null) {
+		const candidate = trimPathToken(match[1] ?? '')
+		if (candidate) candidates.add(candidate)
+	}
+	const backtickPattern = /`([^`]+)`/g
+	while ((match = backtickPattern.exec(text)) !== null) {
+		const segment = match[1]?.trim()
+		if (!segment) continue
+		if (segment.startsWith('/') || segment.startsWith('./') || segment.startsWith('../') || segment.startsWith('~/')) {
+			candidates.add(trimPathToken(segment))
+			continue
+		}
+		for (const token of segment.split(/\s+/)) {
+			if (!token) continue
+			if (token.startsWith('/') || token.startsWith('./') || token.startsWith('../') || token.startsWith('~/')) {
+				candidates.add(trimPathToken(token))
+			}
+		}
+	}
+	return [...candidates]
+}
+
+const detectAutoAttachFiles = async (
+	text: string,
+	workingDirectory: string,
+	queuedPaths: Set<string>
+): Promise<SendfileCommand[]> => {
+	const roots = buildAutoAttachRoots(workingDirectory)
+	const candidates = collectPathCandidates(text)
+	const results: SendfileCommand[] = []
+
+	for (const candidate of candidates) {
+		const resolvedPath = resolveAttachmentPath(candidate, workingDirectory)
+		if (!resolvedPath) continue
+		if (queuedPaths.has(resolvedPath)) continue
+		if (!isWithinAllowedRoots(resolvedPath, roots)) continue
+		let stats
+		try {
+			stats = await stat(resolvedPath)
+		} catch {
+			continue
+		}
+		if (!stats.isFile()) continue
+		if (stats.size > AUTO_ATTACH_MAX_BYTES) continue
+		results.push({ path: resolvedPath })
+		queuedPaths.add(resolvedPath)
+	}
+
+	return results
 }
 
 const SUBAGENT_SPAWN_INSTRUCTIONS = [
@@ -959,6 +1102,7 @@ const spawnSubagentInternal = async (opts: SpawnSubagentInternalOptions): Promis
 			// Run the subagent (no resume token - fresh session)
 			const run = async () => {
 				let prompt = task
+				prompt = `${FILE_ATTACHMENT_INSTRUCTIONS}\n\n${prompt}`
 				// Deterministic boot context for fresh subagents
 				try {
 					const boot = await buildBootContext(workingDirectory, { mode: 'subagent' })
@@ -1128,6 +1272,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		if (context?.source !== 'session-tool') {
 			prompt = `${buildSessionToolInstructions()}\n\n${prompt}`
 		}
+		prompt = `${FILE_ATTACHMENT_INSTRUCTIONS}\n\n${prompt}`
 
 		// Enforce tool-based recall for recall questions (forces a tool call loop)
 		if (recallRequired) {
@@ -1267,8 +1412,10 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 
 			// Queue files to send after completion (don't send mid-stream)
 			for (const file of files) {
-				if (!pendingFiles.some(f => f.path === file.path)) {
-					pendingFiles.push(file)
+				const resolvedPath = resolveAttachmentPath(file.path, config.workingDirectory)
+				if (!resolvedPath) continue
+				if (!pendingFiles.some(f => f.path === resolvedPath)) {
+					pendingFiles.push({ ...file, path: resolvedPath })
 				}
 			}
 
@@ -1560,13 +1707,24 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 							// ignore
 						}
 
-						const settings = getSettings()
-						const useNormalizedOutput = normalizedOutputEnabled && !settings.streaming
-						const { files, remainingText } = extractSendfileCommands(evt.answer)
-						const textToSend = files.length > 0 ? remainingText : evt.answer
+					const settings = getSettings()
+					const useNormalizedOutput = normalizedOutputEnabled && !settings.streaming
+					const { files: sendfileFiles, remainingText } = extractSendfileCommands(evt.answer)
+					const resolvedSendfileFiles = sendfileFiles
+						.map((file) => {
+							const resolvedPath = resolveAttachmentPath(file.path, config.workingDirectory)
+							return resolvedPath ? { ...file, path: resolvedPath } : null
+						})
+						.filter((file): file is SendfileCommand => Boolean(file))
+					const textToSend = resolvedSendfileFiles.length > 0 ? remainingText : evt.answer
+					const queuedPaths = new Set(pendingFiles.map((file) => file.path))
+					for (const file of resolvedSendfileFiles) {
+						queuedPaths.add(file.path)
+					}
+					const autoFiles = await detectAutoAttachFiles(textToSend, config.workingDirectory, queuedPaths)
 
-						if (useNormalizedOutput) {
-							const normalized = normalizeBridgeEvents(normalizationEvents, {
+					if (useNormalizedOutput) {
+						const normalized = normalizeBridgeEvents(normalizationEvents, {
 								chatId,
 								cli: cliName,
 								model: settings.model,
@@ -1576,14 +1734,29 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 								verbose: settings.verbose,
 								streaming: settings.streaming,
 							})
+						if (normalized.attachments?.length) {
+							normalized.attachments = normalized.attachments
+								.map((attachment) => {
+									const resolvedPath = resolveAttachmentPath(attachment.path, config.workingDirectory)
+									return resolvedPath ? { ...attachment, path: resolvedPath } : null
+								})
+								.filter((attachment): attachment is NonNullable<typeof normalized.attachments>[number] => Boolean(attachment))
+						}
 							await sendToGateway(config.gatewayUrl, config.authToken, {
 								chatId,
 								text: textToSend,
 								structured: normalized,
 							})
+						for (const file of autoFiles) {
+							log(`[jsonl-bridge] Auto-attaching file: ${file.path}`)
+							const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
+							if (!sent) {
+								logWarn(`[jsonl-bridge] Auto-attach failed for ${file.path}`)
+							}
+						}
 						} else {
 							// Extract and send any file attachments from the response (for non-streaming case)
-							for (const file of files) {
+						for (const file of resolvedSendfileFiles) {
 								// Skip if already sent from pendingFiles
 								if (pendingFiles.some(f => f.path === file.path)) continue
 								log(`[jsonl-bridge] Sending file attachment: ${file.path}`)
@@ -1592,6 +1765,13 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 									await send(chatId, `❌ Failed to send file: ${file.path}`)
 								}
 							}
+						for (const file of autoFiles) {
+							log(`[jsonl-bridge] Auto-attaching file: ${file.path}`)
+							const sent = await sendFileToGateway(config.gatewayUrl, config.authToken, chatId, file.path, file.caption)
+							if (!sent) {
+								logWarn(`[jsonl-bridge] Auto-attach failed for ${file.path}`)
+							}
+						}
 
 							// Send remaining text (if any, and not already streamed)
 						if (textToSend) {
