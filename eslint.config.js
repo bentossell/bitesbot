@@ -4,7 +4,7 @@ import tsParser from '@typescript-eslint/parser'
 import tsPlugin from '@typescript-eslint/eslint-plugin'
 
 export default [
-	{ ignores: ['dist/**'] },
+	{ ignores: ['dist/**', 'packages/shared/**'] },
 	js.configs.recommended,
 	{
 		files: ['**/*.ts'],
