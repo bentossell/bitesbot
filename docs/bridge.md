@@ -60,6 +60,11 @@ Cron:
 - `/cron enable <id>`
 - `/cron disable <id>`
 
+Pre-brief:
+
+- `/prebrief` - list today’s calendar events
+- `/prebrief <event>` - generate and save pre-brief
+
 ## Memory integration
 
 If memory is enabled in config, the bridge can inject recall results into prompts and expose a memory tool. See `src/memory/` for details.
