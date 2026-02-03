@@ -10,6 +10,7 @@ import { pipeline } from 'node:stream/promises'
 import { Bot, InputFile } from 'grammy'
 import { WebSocketServer } from 'ws'
 import { isAuthorized } from './auth.js'
+import { applyCorsHeaders } from './cors.js'
 import type { GatewayConfig } from './config.js'
 import { normalizeMessage } from './normalize.js'
 import { toTelegramMarkdown } from './telegram-markdown.js'
@@ -214,6 +215,12 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 	}
 
 	const server = createServer(async (req, res) => {
+		applyCorsHeaders(req, res)
+		if (req.method === 'OPTIONS') {
+			res.writeHead(204)
+			res.end()
+			return
+		}
 		if (!isAuthorized(req, config)) {
 			sendJson(res, 401, { ok: false, error: 'unauthorized' })
 			return
