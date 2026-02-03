@@ -17,8 +17,10 @@ export type InlineButton = {
     callbackData: string;
 };
 export type OutboundMessage = {
-    chatId: number;
+    chatId: number | string;
     text?: string;
+    editMessageId?: number;
+    structured?: Record<string, unknown>;
     photoUrl?: string;
     documentUrl?: string;
     documentPath?: string;
@@ -29,10 +31,11 @@ export type OutboundMessage = {
 };
 export type SendResponse = {
     ok: boolean;
-    messageId: number;
+    messageId?: number;
+    error?: string;
 };
 export type TypingRequest = {
-    chatId: number;
+    chatId: number | string;
 };
 export type TypingResponse = {
     ok: boolean;
@@ -44,12 +47,13 @@ export type IncomingAttachment = {
 };
 export type IncomingMessage = {
     id: string;
-    chatId: number;
-    userId: number;
+    chatId: number | string;
+    userId: number | string;
     messageId: number;
     text?: string;
     attachments?: IncomingAttachment[];
     timestamp: string;
+    source?: "telegram" | "web";
     forward?: {
         fromUser?: {
             id: number;
@@ -58,15 +62,30 @@ export type IncomingMessage = {
     };
     raw?: Record<string, unknown>;
 };
+export type IngestRequest = {
+    id?: string;
+    chatId: number | string;
+    userId?: number | string;
+    text?: string;
+    timestamp?: string;
+    source?: "web";
+};
+export type IngestResponse = {
+    ok: boolean;
+    error?: string;
+};
 export type GatewayEvent = {
     type: "message.received";
     payload: IncomingMessage;
 } | {
     type: "message.sent";
     payload: {
-        chatId: number;
-        messageId: number;
+        chatId: number | string;
+        messageId?: number;
     };
+} | {
+    type: "message.outbound";
+    payload: OutboundMessage;
 } | {
     type: "callback.query";
     payload: Record<string, unknown>;

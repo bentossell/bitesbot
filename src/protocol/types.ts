@@ -24,8 +24,23 @@ export type IncomingMessage = {
 	text?: string
 	attachments?: Attachment[]
 	timestamp: string
+	source?: 'telegram' | 'web'
 	forward?: ForwardInfo // Present if message was forwarded
 	raw: unknown
+}
+
+export type IngestRequest = {
+	id?: string
+	chatId: number | string
+	userId?: number | string
+	text?: string
+	timestamp?: string
+	source?: 'web'
+}
+
+export type IngestResponse = {
+	ok: boolean
+	error?: string
 }
 
 export type InlineButton = {
@@ -65,6 +80,7 @@ export type CallbackQuery = {
 export type GatewayEvent =
 	| { type: 'message.received'; payload: IncomingMessage }
 	| { type: 'message.sent'; payload: { chatId: number | string; messageId?: number } }
+	| { type: 'message.outbound'; payload: OutboundMessage }
 	| { type: 'callback.query'; payload: CallbackQuery }
 	| { type: 'error'; payload: { message: string; detail?: string } }
 

@@ -2,6 +2,8 @@ import type {
   GatewayEvent,
   GatewayHealth,
   GatewayStatus,
+  IngestRequest,
+  IngestResponse,
   OutboundMessage,
   SendResponse,
   TypingRequest,
@@ -52,6 +54,11 @@ export const createGatewayClient = (options: GatewayClientOptions) => ({
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  ingest: (payload: IngestRequest) =>
+    request<IngestResponse>(options, "/ingest", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 })
 
 export type GatewayEventsClient = {
@@ -68,13 +75,21 @@ export type GatewayEventsOptions = {
   onError?: (error: Event) => void
 }
 
-const toWsUrl = (baseUrl: string) =>
-  baseUrl.replace(/^http/, "ws") + "/events"
+const toWsUrl = (baseUrl: string, authToken?: string) => {
+  const wsBase = baseUrl.replace(/^http/, "ws")
+  const url = new URL(wsBase)
+  const trimmed = url.pathname.replace(/\/$/, "")
+  url.pathname = trimmed === "" ? "/events" : `${trimmed}/events`
+  if (authToken) {
+    url.searchParams.set("token", authToken)
+  }
+  return url.toString()
+}
 
 export const createGatewayEventsClient = (
   options: GatewayEventsOptions
 ): GatewayEventsClient => {
-  const socket = new WebSocket(toWsUrl(options.baseUrl))
+  const socket = new WebSocket(toWsUrl(options.baseUrl, options.authToken))
 
   socket.addEventListener("open", () => {
     if (options.authToken) {

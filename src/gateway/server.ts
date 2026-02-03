@@ -19,6 +19,8 @@ import { isVoiceAttachment, processVoiceAttachment } from './media.js'
 import type {
 	GatewayEvent,
 	HealthResponse,
+	IngestRequest,
+	IngestResponse,
 	OutboundMessage,
 	SendResponse,
 	StatusResponse,
@@ -241,11 +243,51 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			return
 		}
 
+		if (req.method === 'POST' && path === '/ingest') {
+			try {
+				const raw = await readBody(req)
+				const payload = JSON.parse(raw) as IngestRequest
+				if (!payload.chatId || !payload.text) {
+					const response: IngestResponse = { ok: false, error: 'chatId and text are required' }
+					sendJson(res, 400, response)
+					return
+				}
+
+				const timestamp = payload.timestamp ?? new Date().toISOString()
+				const event: GatewayEvent = {
+					type: 'message.received',
+					payload: {
+						id: payload.id ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+						chatId: payload.chatId,
+						userId: payload.userId ?? 'web',
+						messageId: 0,
+						text: payload.text,
+						timestamp,
+						source: payload.source ?? 'web',
+						raw: payload,
+					},
+				}
+				broadcast(event)
+				sendJson(res, 200, { ok: true } satisfies IngestResponse)
+			} catch (error) {
+				const message = error instanceof Error ? error.message : 'unknown error'
+				sendJson(res, 400, { ok: false, error: message } satisfies IngestResponse)
+			}
+			return
+		}
+
 		if (req.method === 'POST' && path === '/send') {
 			let payload: OutboundMessage | undefined
 			try {
 				const raw = await readBody(req)
 				payload = JSON.parse(raw) as OutboundMessage
+
+				if (typeof payload.chatId === 'string' && payload.chatId.startsWith('web:')) {
+					broadcast({ type: 'message.outbound', payload })
+					sendJson(res, 200, { ok: true })
+					return
+				}
+
 				const response = await sendOutboundMessage(bot, payload, {
 					normalizedOutput: config.normalizedOutput,
 				})

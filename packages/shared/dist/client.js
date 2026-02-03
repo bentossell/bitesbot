@@ -27,10 +27,23 @@ export const createGatewayClient = (options) => ({
         method: "POST",
         body: JSON.stringify(payload),
     }),
+    ingest: (payload) => request(options, "/ingest", {
+        method: "POST",
+        body: JSON.stringify(payload),
+    }),
 });
-const toWsUrl = (baseUrl) => baseUrl.replace(/^http/, "ws") + "/events";
+const toWsUrl = (baseUrl, authToken) => {
+    const wsBase = baseUrl.replace(/^http/, "ws");
+    const url = new URL(wsBase);
+    const trimmed = url.pathname.replace(/\/$/, "");
+    url.pathname = trimmed === "" ? "/events" : `${trimmed}/events`;
+    if (authToken) {
+        url.searchParams.set("token", authToken);
+    }
+    return url.toString();
+};
 export const createGatewayEventsClient = (options) => {
-    const socket = new WebSocket(toWsUrl(options.baseUrl));
+    const socket = new WebSocket(toWsUrl(options.baseUrl, options.authToken));
     socket.addEventListener("open", () => {
         if (options.authToken) {
             socket.send(JSON.stringify({ type: "auth", token: options.authToken }));
