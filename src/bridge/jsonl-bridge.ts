@@ -1,5 +1,5 @@
 import WebSocket from 'ws'
-import type { GatewayEvent, IncomingMessage, OutboundMessage, SendResponse } from '../protocol/types.js'
+import type { AgentActivityPayload, GatewayEvent, IncomingMessage, OutboundMessage, SendResponse } from '../protocol/types.js'
 import { readFile, stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -756,6 +756,49 @@ const sendTyping = async (
 	}
 }
 
+const sendActivity = async (
+	baseUrl: string,
+	authToken: string | undefined,
+	payload: AgentActivityPayload
+) => {
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+	if (authToken) {
+		headers.Authorization = `Bearer ${authToken}`
+	}
+
+	const httpUrl = baseUrl.replace(/^ws/, 'http').replace('/events', '')
+	try {
+		const response = await fetch(`${httpUrl}/activity`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(payload),
+		})
+		if (!response.ok) {
+			const body = await response.text().catch(() => '')
+			void logToFile('error', 'bridge send activity non-200', {
+				status: response.status,
+				chatId: payload.chatId,
+				activity: payload.activity.type,
+				body: body.slice(0, 1000),
+			}).catch(() => {})
+			return
+		}
+		if (process.env.TG_GATEWAY_DEBUG_ACTIVITY === '1') {
+			void logToFile('info', 'bridge send activity ok', {
+				chatId: payload.chatId,
+				activity: payload.activity.type,
+			}).catch(() => {})
+		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : 'unknown error'
+		void logToFile('error', 'bridge send activity failed', {
+			error: message,
+			chatId: payload.chatId,
+			activity: payload.activity.type,
+		}).catch(() => {})
+	}
+}
+
 const sendFileToGateway = async (
 	baseUrl: string,
 	authToken: string | undefined,
@@ -1384,6 +1427,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 		let lastToolStatus: string | null = null
 		let currentSessionId: string | undefined
 		const taskRunByToolId = new Map<string, string>()
+		const toolNameByToolId = new Map<string, string>()
 		let streamBuffer = ''
 		let lastStreamedBuffer = ''
 		let streamedTextForEdit = ''
@@ -1489,6 +1533,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					log(`[jsonl-bridge] [${Date.now() - t0}ms] Session started: ${evt.sessionId}`)
 					currentSessionId = evt.sessionId
 					sessionStore.setResumeToken(chatId, cliName, { engine: cliName, sessionId: evt.sessionId })
+					void sendActivity(config.gatewayUrl, config.authToken, { chatId, activity: { type: 'started' } })
 					break
 
 				case 'thinking':
@@ -1518,6 +1563,8 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					break
 
 				case 'tool_start': {
+					toolNameByToolId.set(evt.toolId, evt.name)
+					void sendActivity(config.gatewayUrl, config.authToken, { chatId, activity: { type: 'tool_start', toolId: evt.toolId, name: evt.name } })
 					// Map Droid Task tool calls to subagent records
 					if (evt.name === 'Task') {
 						const input = evt.input ?? {}
@@ -1551,6 +1598,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 				}
 
 				case 'tool_end':
+					void sendActivity(config.gatewayUrl, config.authToken, { chatId, activity: { type: 'tool_end', toolId: evt.toolId, name: toolNameByToolId.get(evt.toolId) ?? 'unknown', isError: evt.isError } })
 					if (taskRunByToolId.has(evt.toolId)) {
 						const runId = taskRunByToolId.get(evt.toolId) as string
 						taskRunByToolId.delete(evt.toolId)
@@ -1574,6 +1622,7 @@ export const startBridge = async (config: BridgeConfig): Promise<BridgeHandle> =
 					break
 
 					case 'completed': {
+						void sendActivity(config.gatewayUrl, config.authToken, { chatId, activity: { type: "completed" } })
 						stopTypingLoop()
 						if (streamTimer) {
 							clearTimeout(streamTimer)

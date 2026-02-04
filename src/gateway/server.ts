@@ -18,6 +18,7 @@ import { sendNormalizedTelegram } from './telegram-renderer.js'
 import { logToFile } from '../logging/file.js'
 import { isVoiceAttachment, processVoiceAttachment } from './media.js'
 import type {
+	AgentActivityPayload,
 	GatewayEvent,
 	HealthResponse,
 	IngestRequest,
@@ -337,6 +338,28 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 				sendJson(res, 200, { ok: true })
 			} catch (error) {
 				const message = error instanceof Error ? error.message : 'unknown error'
+				sendJson(res, 400, { ok: false, error: message })
+			}
+			return
+		}
+
+		if (req.method === 'POST' && path === '/activity') {
+			try {
+				const raw = await readBody(req)
+				const payload = JSON.parse(raw) as AgentActivityPayload
+				if (process.env.TG_GATEWAY_DEBUG_ACTIVITY === '1') {
+					void logToFile('info', 'activity event received', {
+						chatId: payload.chatId,
+						activity: payload.activity.type,
+					}).catch(() => {})
+				}
+				broadcast({ type: 'agent.activity', payload })
+				sendJson(res, 200, { ok: true })
+			} catch (error) {
+				const message = error instanceof Error ? error.message : 'unknown error'
+				void logToFile('error', 'activity event failed', {
+					error: message,
+				}).catch(() => {})
 				sendJson(res, 400, { ok: false, error: message })
 			}
 			return
