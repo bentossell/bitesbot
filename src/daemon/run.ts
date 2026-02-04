@@ -1,6 +1,6 @@
-import { loadConfig } from '../gateway/config.js'
+import { loadConfig, type GatewayMeta } from '../gateway/config.js'
 import { startGatewayServer } from '../gateway/server.js'
-import { startBridge, type BridgeHandle, setWorkspaceDir } from '../bridge/index.js'
+import { startBridge, type BridgeHandle, setWorkspaceDir, loadAllManifests } from '../bridge/index.js'
 import { removePidFile, writePidFile } from './pid.js'
 import { log } from '../logging/file.js'
 
@@ -10,8 +10,33 @@ export type RunOptions = {
 	notifyRestart?: boolean
 }
 
+const buildGatewayMeta = async (adaptersDir: string, defaultCli: string): Promise<GatewayMeta> => {
+	const manifests = await loadAllManifests(adaptersDir)
+	const adapters = Array.from(manifests.values()).map((m) => ({
+		name: m.name,
+		modelDefault: m.model?.default,
+	}))
+	// Build models.byCli - for now just expose the default model per CLI
+	const byCli: Record<string, Array<{ alias: string; id: string }>> = {}
+	for (const m of manifests.values()) {
+		if (m.model?.default) {
+			byCli[m.name] = [{ alias: m.model.default, id: m.model.default }]
+		}
+	}
+	return {
+		defaultCli,
+		adapters,
+		models: { aliases: {}, byCli },
+	}
+}
+
 export const runGateway = async (options: RunOptions = {}) => {
 	const config = await loadConfig({ configPath: options.configPath, env: options.env })
+	
+	// Load adapter metadata before starting server
+	if (config.bridge.enabled) {
+		config.meta = await buildGatewayMeta(config.bridge.adaptersDir, config.bridge.defaultCli)
+	}
 	
 	// Start gateway FIRST (bridge needs to connect to it)
 	const server = await startGatewayServer(config)

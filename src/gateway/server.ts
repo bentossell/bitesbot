@@ -251,6 +251,15 @@ export const startGatewayServer = async (config: GatewayConfig): Promise<Gateway
 			return
 		}
 
+		if (req.method === 'GET' && path === '/meta') {
+			if (!config.meta) {
+				sendJson(res, 200, { defaultCli: 'droid', adapters: [], models: { aliases: {}, byCli: {} } })
+				return
+			}
+			sendJson(res, 200, config.meta)
+			return
+		}
+
 		if (req.method === 'POST' && path === '/ingest') {
 			try {
 				const raw = await readBody(req)

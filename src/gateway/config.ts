@@ -14,6 +14,20 @@ export type BridgeConfig = {
 	envFile?: string
 }
 
+export type AdapterMeta = {
+	name: string
+	modelDefault?: string
+}
+
+export type GatewayMeta = {
+	defaultCli: string
+	adapters: AdapterMeta[]
+	models: {
+		aliases: Record<string, string>
+		byCli: Record<string, Array<{ alias: string; id: string }>>
+	}
+}
+
 export type GatewayConfig = {
 	botToken: string
 	host: string
@@ -23,6 +37,7 @@ export type GatewayConfig = {
 	allowedChatIds?: number[]
 	normalizedOutput?: boolean
 	bridge: BridgeConfig
+	meta?: GatewayMeta
 }
 
 export type LoadConfigOptions = {
