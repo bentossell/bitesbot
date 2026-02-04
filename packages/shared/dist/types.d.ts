@@ -74,6 +74,23 @@ export type IngestResponse = {
     ok: boolean;
     error?: string;
 };
+export type AgentActivityPayload = {
+    chatId: number | string;
+    activity: {
+        type: "started";
+    } | {
+        type: "tool_start";
+        toolId: string;
+        name: string;
+    } | {
+        type: "tool_end";
+        toolId: string;
+        name: string;
+        isError: boolean;
+    } | {
+        type: "completed";
+    };
+};
 export type GatewayEvent = {
     type: "message.received";
     payload: IncomingMessage;
@@ -86,6 +103,9 @@ export type GatewayEvent = {
 } | {
     type: "message.outbound";
     payload: OutboundMessage;
+} | {
+    type: "agent.activity";
+    payload: AgentActivityPayload;
 } | {
     type: "callback.query";
     payload: Record<string, unknown>;

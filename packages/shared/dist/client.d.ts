@@ -1,4 +1,4 @@
-import type { GatewayEvent, GatewayHealth, GatewayStatus, IngestRequest, IngestResponse, OutboundMessage, SendResponse, TypingRequest, TypingResponse } from "./types.js";
+import type { AgentActivityPayload, GatewayEvent, GatewayHealth, GatewayStatus, IngestRequest, IngestResponse, OutboundMessage, SendResponse, TypingRequest, TypingResponse } from "./types.js";
 export type GatewayClientOptions = {
     baseUrl: string;
     authToken?: string;
@@ -9,6 +9,9 @@ export declare const createGatewayClient: (options: GatewayClientOptions) => {
     send: (payload: OutboundMessage) => Promise<SendResponse>;
     typing: (payload: TypingRequest) => Promise<TypingResponse>;
     ingest: (payload: IngestRequest) => Promise<IngestResponse>;
+    activity: (payload: AgentActivityPayload) => Promise<{
+        ok: boolean;
+    }>;
 };
 export type GatewayEventsClient = {
     socket: WebSocket;

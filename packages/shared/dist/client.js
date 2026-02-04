@@ -31,6 +31,10 @@ export const createGatewayClient = (options) => ({
         method: "POST",
         body: JSON.stringify(payload),
     }),
+    activity: (payload) => request(options, "/activity", {
+        method: "POST",
+        body: JSON.stringify(payload),
+    }),
 });
 const toWsUrl = (baseUrl, authToken) => {
     const wsBase = baseUrl.replace(/^http/, "ws");

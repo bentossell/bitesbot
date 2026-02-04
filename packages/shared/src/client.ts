@@ -1,4 +1,5 @@
 import type {
+  AgentActivityPayload,
   GatewayEvent,
   GatewayHealth,
   GatewayStatus,
@@ -56,6 +57,11 @@ export const createGatewayClient = (options: GatewayClientOptions) => ({
     }),
   ingest: (payload: IngestRequest) =>
     request<IngestResponse>(options, "/ingest", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  activity: (payload: AgentActivityPayload) =>
+    request<{ ok: boolean }>(options, "/activity", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
