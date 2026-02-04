@@ -207,9 +207,38 @@ const resolveModelForCli = (cli: string, model?: string): string | undefined => 
 	return resolved
 }
 
+// Check if text is just a bare URL (for quick link saving)
+const isBareUrl = (text: string): boolean => {
+	const trimmed = text.trim()
+	// Must start with http:// or https:// and have no other content
+	if (!trimmed.match(/^https?:\/\/\S+$/)) return false
+	// Reject if it has spaces (meaning additional text)
+	if (trimmed.includes(' ')) return false
+	return true
+}
+
 const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> => {
 	const { text, chatId, manifests, defaultCli, sessionStore, workingDirectory, cronService, persistentStore } = opts
 	const trimmed = text.trim()
+
+	// Quick link save: if message is just a URL, append to links/inbox.md
+	if (isBareUrl(trimmed)) {
+		try {
+			const { appendFile, mkdir } = await import('node:fs/promises')
+			const { join } = await import('node:path')
+			const linksDir = join(workingDirectory, 'links')
+			const inboxPath = join(linksDir, 'inbox.md')
+			await mkdir(linksDir, { recursive: true })
+			const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16)
+			const entry = `- ${trimmed} (${timestamp})\n`
+			await appendFile(inboxPath, entry, 'utf-8')
+			console.log(`[jsonl-bridge] Saved link to inbox: ${trimmed}`)
+			return { handled: true, response: '📎 Saved' }
+		} catch (err) {
+			console.error('[jsonl-bridge] Failed to save link:', err)
+			// Fall through to normal processing if save fails
+		}
+	}
 
 	if (trimmed.startsWith('/use ')) {
 		const cli = trimmed.slice(5).trim().toLowerCase()
@@ -383,18 +412,49 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		const session = sessionStore.get(chatId)
 		const currentCli = sessionStore.getActiveCli(chatId) || session?.cli || defaultCli
 		const resumeToken = sessionStore.getResumeToken(chatId, currentCli)
-		const settings = persistentStore?.getChatSettings(chatId) ?? { streaming: false, verbose: false }
+		const settings = persistentStore?.getChatSettings(chatId) ?? { streaming: false, verbose: false, model: undefined }
+		const modelDisplay = settings.model ? resolveModelAlias(settings.model) || settings.model : 'default'
+		
+		// Get active subagents
+		const activeSubagents = subagentRegistry.listActive(chatId)
+		
 		if (!session && !resumeToken) {
-			return { handled: true, response: `No active session. CLI: ${currentCli}\nStreaming: ${settings.streaming ? 'on' : 'off'}` }
+			const lines = [
+				`CLI: ${currentCli}`,
+				`Model: ${modelDisplay}`,
+				`Streaming: ${settings.streaming ? 'on' : 'off'}`,
+			]
+			if (activeSubagents.length > 0) {
+				lines.push('')
+				lines.push(`🔄 Subagents (${activeSubagents.length}):`)
+				for (const sub of activeSubagents) {
+					const label = sub.label || sub.runId.slice(0, 8)
+					const status = sub.status === 'running' ? '⚙️' : '⏳'
+					lines.push(`  ${status} ${label} (${sub.cli})`)
+				}
+			}
+			return { handled: true, response: lines.join('\n') }
 		}
 		const info = session?.getInfo()
 		const lines = [
 			`CLI: ${currentCli}`,
+			`Model: ${modelDisplay}`,
 			`State: ${info?.state || 'ready'}`,
 			`Streaming: ${settings.streaming ? 'on' : 'off'}`,
 		]
 		if (resumeToken) {
 			lines.push(`Resume: ${resumeToken.sessionId.slice(0, 8)}...`)
+		}
+		// Show active subagents
+		if (activeSubagents.length > 0) {
+			lines.push('')
+			lines.push(`🔄 Subagents (${activeSubagents.length}):`)
+			for (const sub of activeSubagents) {
+				const label = sub.label || sub.runId.slice(0, 8)
+				const status = sub.status === 'running' ? '⚙️' : '⏳'
+				const elapsed = sub.startedAt ? `${Math.round((Date.now() - sub.startedAt) / 1000)}s` : 'queued'
+				lines.push(`  ${status} ${label} (${sub.cli}) - ${elapsed}`)
+			}
 		}
 		return { handled: true, response: lines.join('\n') }
 	}
