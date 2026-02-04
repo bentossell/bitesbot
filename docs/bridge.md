@@ -64,6 +64,7 @@ Pre-brief:
 
 - `/prebrief` - list today’s calendar events
 - `/prebrief <event>` - generate and save pre-brief
+- `/prebrief-watch` - generate pre-briefs for tomorrow’s high-priority meetings
 
 ## Memory integration
 

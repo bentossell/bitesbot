@@ -252,6 +252,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 			'/crons - list cron jobs',
 			'/remind <time> <message> - schedule a reminder',
 			'/prebrief [event] - generate meeting pre-brief',
+			'/prebrief-watch - generate pre-briefs for tomorrow’s high-priority meetings',
 			'/stop - terminate the current session',
 			'/interrupt - stop current task and continue queue',
 			'/restart - restart the gateway',
@@ -649,6 +650,13 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 		}
 
 		return { handled: true, response: `Unknown cron command. Usage:\n/cron list\n/cron add "name" every 30m\n/cron add "name" cron "0 9 * * *"\n/cron remove <id>\n/cron run <id>\n/cron enable <id>\n/cron disable <id>` }
+	}
+
+	// /prebrief-watch command - generate pre-briefs for tomorrow
+	if (trimmed === '/prebrief-watch') {
+		const { runPrebriefWatch } = await import('./prebrief.js')
+		const response = await runPrebriefWatch()
+		return { handled: true, response }
 	}
 
 	// /prebrief command - generate meeting pre-briefs
