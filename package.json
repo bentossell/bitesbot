@@ -47,7 +47,8 @@
 		"docs:check": "tsx scripts/docs-check.ts",
 		"telegram:session": "tsx scripts/telegram-session.ts",
 		"precommit": "pnpm run typecheck && pnpm run lint && pnpm run test:unit",
-		"prepare": "husky"
+		"prepare": "husky",
+		"test:dashboard": "node apps/test-dashboard/server.js"
 	},
 	"dependencies": {
 		"commander": "^12.1.0",

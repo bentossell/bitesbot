@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "tokens": {
+    "6053795357:pi": {
+      "engine": "pi",
+      "sessionId": "fe5f7302-8288-4f71-a047-3e0830d9dc73"
+    }
+  },
+  "activeCli": {
+    "6053795357": "pi"
+  },
+  "chatSettings": {
+    "6053795357": {
+      "streaming": true,
+      "verbose": false
+    }
+  }
+}

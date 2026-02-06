@@ -1,0 +1,218 @@
+{
+  "root": "page",
+  "elements": {
+    "page": {
+      "key": "page",
+      "type": "Page",
+      "props": {
+        "title": "Todos",
+        "description": "Manage your tasks"
+      },
+      "children": ["stats-section", "filter-section", "todos-section"],
+      "parentKey": null
+    },
+    "stats-section": {
+      "key": "stats-section",
+      "type": "Grid",
+      "props": {
+        "columns": 3,
+        "gap": "md"
+      },
+      "children": ["total-metric", "completed-metric", "pending-metric"],
+      "parentKey": "page"
+    },
+    "total-metric": {
+      "key": "total-metric",
+      "type": "Metric",
+      "props": {
+        "label": "Total",
+        "valuePath": { "path": "/stats/total" }
+      },
+      "children": [],
+      "parentKey": "stats-section"
+    },
+    "completed-metric": {
+      "key": "completed-metric",
+      "type": "Metric",
+      "props": {
+        "label": "Completed",
+        "valuePath": { "path": "/stats/completed" },
+        "highlight": "success"
+      },
+      "children": [],
+      "parentKey": "stats-section"
+    },
+    "pending-metric": {
+      "key": "pending-metric",
+      "type": "Metric",
+      "props": {
+        "label": "Pending",
+        "valuePath": { "path": "/stats/pending" },
+        "highlight": "warning"
+      },
+      "children": [],
+      "parentKey": "stats-section"
+    },
+    "filter-section": {
+      "key": "filter-section",
+      "type": "Stack",
+      "props": {
+        "direction": "row",
+        "gap": "sm",
+        "align": "center"
+      },
+      "children": ["filter-label", "filter-select"],
+      "parentKey": "page"
+    },
+    "filter-label": {
+      "key": "filter-label",
+      "type": "Text",
+      "props": {
+        "content": "Filter:",
+        "variant": "label"
+      },
+      "children": [],
+      "parentKey": "filter-section"
+    },
+    "filter-select": {
+      "key": "filter-select",
+      "type": "Select",
+      "props": {
+        "label": "Filter",
+        "bindPath": "/filter",
+        "options": [
+          { "label": "All", "value": "all" },
+          { "label": "Pending", "value": "pending" },
+          { "label": "Completed", "value": "completed" }
+        ],
+        "placeholder": "Filter todos"
+      },
+      "children": [],
+      "parentKey": "filter-section"
+    },
+    "todos-section": {
+      "key": "todos-section",
+      "type": "Section",
+      "props": {
+        "title": "Tasks"
+      },
+      "children": ["todos-list"],
+      "parentKey": "page"
+    },
+    "todos-list": {
+      "key": "todos-list",
+      "type": "Repeat",
+      "props": {
+        "dataPath": "/todos",
+        "emptyMessage": "No todos yet. Add one to get started!",
+        "direction": "column",
+        "gap": "sm"
+      },
+      "children": ["todo-card"],
+      "parentKey": "todos-section"
+    },
+    "todo-card": {
+      "key": "todo-card",
+      "type": "Card",
+      "props": {
+        "variant": "default",
+        "size": "sm"
+      },
+      "children": ["todo-content"],
+      "parentKey": "todos-list"
+    },
+    "todo-content": {
+      "key": "todo-content",
+      "type": "Stack",
+      "props": {
+        "direction": "row",
+        "gap": "md",
+        "align": "center",
+        "justify": "between"
+      },
+      "children": ["todo-info", "todo-actions"],
+      "parentKey": "todo-card"
+    },
+    "todo-info": {
+      "key": "todo-info",
+      "type": "Stack",
+      "props": {
+        "direction": "column",
+        "gap": "xs"
+      },
+      "children": ["todo-title", "todo-meta"],
+      "parentKey": "todo-content"
+    },
+    "todo-title": {
+      "key": "todo-title",
+      "type": "Text",
+      "props": {
+        "valuePath": { "path": "/item/title" },
+        "variant": "body",
+        "weight": "medium"
+      },
+      "children": [],
+      "parentKey": "todo-info"
+    },
+    "todo-meta": {
+      "key": "todo-meta",
+      "type": "Stack",
+      "props": {
+        "direction": "row",
+        "gap": "sm",
+        "align": "center"
+      },
+      "children": ["todo-priority", "todo-status"],
+      "parentKey": "todo-info"
+    },
+    "todo-priority": {
+      "key": "todo-priority",
+      "type": "Badge",
+      "props": {
+        "valuePath": { "path": "/item/priority" },
+        "mapping": {
+          "high": { "text": "High", "variant": "destructive" },
+          "medium": { "text": "Medium", "variant": "warning" },
+          "low": { "text": "Low", "variant": "secondary" }
+        }
+      },
+      "children": [],
+      "parentKey": "todo-meta"
+    },
+    "todo-status": {
+      "key": "todo-status",
+      "type": "Badge",
+      "props": {
+        "valuePath": { "path": "/item/completed" },
+        "mapping": {
+          "true": { "text": "Done", "variant": "success" },
+          "false": { "text": "Pending", "variant": "outline" }
+        }
+      },
+      "children": [],
+      "parentKey": "todo-meta"
+    },
+    "todo-actions": {
+      "key": "todo-actions",
+      "type": "Stack",
+      "props": {
+        "direction": "row",
+        "gap": "xs"
+      },
+      "children": ["complete-btn"],
+      "parentKey": "todo-content"
+    },
+    "complete-btn": {
+      "key": "complete-btn",
+      "type": "Button",
+      "props": {
+        "label": "Toggle",
+        "variant": "outline",
+        "size": "sm",
+        "action": "categorize"
+      },
+      "children": [],
+      "parentKey": "todo-actions"
+    }
+  }
+}

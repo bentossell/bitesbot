@@ -168,3 +168,24 @@ See `docs/configuration.md` for full reference.
 - Don't edit `dist/` — it's generated
 - For E2E tests, need `.env.e2e` with Telegram credentials
 - Logs: `~/logs/bitesbot.log` and `~/logs/bitesbot.err`
+
+---
+
+## Mini-App: Cron Dashboard
+
+This project includes a visual cron dashboard mini-app.
+
+**Files:**
+- `ui.json` — UI layout using json-render format
+- `data.json` — Sample/live data for the dashboard
+
+**Features:**
+- Overview metrics (total jobs, enabled, today's runs, success rate)
+- Job table with status, schedule, next run, session target
+- Run Now action buttons
+- Recent runs history with duration
+
+**Data paths used:**
+- `/cron/stats/*` — Dashboard metrics
+- `/cron/jobs` — Job list for table
+- `/cron/recentRuns` — Run history

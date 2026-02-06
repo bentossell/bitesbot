@@ -1,0 +1,49 @@
+{
+  "summary": {
+    "total": 26,
+    "unit": 20,
+    "e2e": 6,
+    "lastRun": null,
+    "passed": null,
+    "failed": null,
+    "duration": null
+  },
+  "testFiles": [
+    {"name": "session-tools.test.ts", "type": "unit", "tests": 8, "status": "unknown"},
+    {"name": "scheduler.test.ts", "type": "unit", "tests": 27, "status": "unknown"},
+    {"name": "subagent-registry.test.ts", "type": "unit", "tests": 23, "status": "unknown"},
+    {"name": "subagent-commands.test.ts", "type": "unit", "tests": 25, "status": "unknown"},
+    {"name": "bridge-events.test.ts", "type": "unit", "tests": 6, "status": "unknown"},
+    {"name": "pi-session-events.test.ts", "type": "unit", "tests": 6, "status": "unknown"},
+    {"name": "session-store.test.ts", "type": "unit", "tests": 17, "status": "unknown"},
+    {"name": "manifest.test.ts", "type": "unit", "tests": 7, "status": "unknown"},
+    {"name": "cron-service.test.ts", "type": "unit", "tests": 12, "status": "unknown"},
+    {"name": "config.test.ts", "type": "unit", "tests": 5, "status": "unknown"},
+    {"name": "codex-adapter.test.ts", "type": "unit", "tests": 4, "status": "unknown"},
+    {"name": "pi-adapter.test.ts", "type": "unit", "tests": 8, "status": "unknown"},
+    {"name": "codex-session-args.test.ts", "type": "unit", "tests": 3, "status": "unknown"},
+    {"name": "pi-session-args.test.ts", "type": "unit", "tests": 4, "status": "unknown"},
+    {"name": "normalize.test.ts", "type": "unit", "tests": 6, "status": "unknown"},
+    {"name": "telegram-markdown.test.ts", "type": "unit", "tests": 10, "status": "unknown"},
+    {"name": "jsonl-session.test.ts", "type": "unit", "tests": 5, "status": "unknown"},
+    {"name": "memory-tools.test.ts", "type": "unit", "tests": 4, "status": "unknown"},
+    {"name": "memory-recall.test.ts", "type": "unit", "tests": 6, "status": "unknown"},
+    {"name": "cors.test.ts", "type": "unit", "tests": 3, "status": "unknown"},
+    {"name": "env-file.test.ts", "type": "unit", "tests": 2, "status": "unknown"},
+    {"name": "pi-agent.e2e.ts", "type": "e2e", "tests": 5, "status": "unknown"},
+    {"name": "adapters.e2e.ts", "type": "e2e", "tests": 3, "status": "unknown"},
+    {"name": "telegram-contract.e2e.ts", "type": "e2e", "tests": 4, "status": "unknown"},
+    {"name": "agent-spawn.e2e.ts", "type": "e2e", "tests": 6, "status": "unknown"},
+    {"name": "telegram-gateway.e2e.ts", "type": "e2e", "tests": 8, "status": "unknown"}
+  ],
+  "recentRuns": [],
+  "categories": {
+    "adapters": ["codex-adapter.test.ts", "pi-adapter.test.ts", "adapters.e2e.ts"],
+    "sessions": ["session-tools.test.ts", "session-store.test.ts", "jsonl-session.test.ts", "pi-session-events.test.ts", "pi-session-args.test.ts", "codex-session-args.test.ts"],
+    "subagents": ["subagent-registry.test.ts", "subagent-commands.test.ts", "agent-spawn.e2e.ts"],
+    "telegram": ["telegram-markdown.test.ts", "telegram-contract.e2e.ts", "telegram-gateway.e2e.ts"],
+    "scheduling": ["scheduler.test.ts", "cron-service.test.ts"],
+    "memory": ["memory-tools.test.ts", "memory-recall.test.ts"],
+    "core": ["config.test.ts", "manifest.test.ts", "bridge-events.test.ts", "normalize.test.ts", "cors.test.ts", "env-file.test.ts"]
+  }
+}

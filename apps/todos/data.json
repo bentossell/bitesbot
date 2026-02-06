@@ -1,0 +1,17 @@
+{
+  "todos": [
+    {
+      "id": "1",
+      "title": "Welcome to your todos!",
+      "completed": true,
+      "priority": "medium",
+      "createdAt": "2026-02-06"
+    }
+  ],
+  "stats": {
+    "total": 1,
+    "completed": 1,
+    "pending": 0
+  },
+  "filter": "all"
+}

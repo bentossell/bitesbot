@@ -1,0 +1,209 @@
+{
+  "root": "page",
+  "elements": {
+    "page": {
+      "key": "page",
+      "type": "Page",
+      "props": {
+        "title": "Test Suite",
+        "description": "bitesbot test visualization"
+      },
+      "children": ["summaryRow", "categoriesSection", "testFilesSection"],
+      "parentKey": null
+    },
+    "summaryRow": {
+      "key": "summaryRow",
+      "type": "Stack",
+      "props": {
+        "direction": "horizontal",
+        "gap": "md",
+        "wrap": true
+      },
+      "children": ["totalCard", "unitCard", "e2eCard", "statusCard"],
+      "parentKey": "page"
+    },
+    "totalCard": {
+      "key": "totalCard",
+      "type": "Card",
+      "props": {
+        "title": "Total Files"
+      },
+      "children": ["totalMetric"],
+      "parentKey": "summaryRow"
+    },
+    "totalMetric": {
+      "key": "totalMetric",
+      "type": "Metric",
+      "props": {
+        "label": "Test Files",
+        "valuePath": "/summary/total",
+        "format": "number"
+      },
+      "parentKey": "totalCard"
+    },
+    "unitCard": {
+      "key": "unitCard",
+      "type": "Card",
+      "props": {
+        "title": "Unit Tests"
+      },
+      "children": ["unitMetric"],
+      "parentKey": "summaryRow"
+    },
+    "unitMetric": {
+      "key": "unitMetric",
+      "type": "Metric",
+      "props": {
+        "label": "Unit",
+        "valuePath": "/summary/unit",
+        "format": "number"
+      },
+      "parentKey": "unitCard"
+    },
+    "e2eCard": {
+      "key": "e2eCard",
+      "type": "Card",
+      "props": {
+        "title": "E2E Tests"
+      },
+      "children": ["e2eMetric"],
+      "parentKey": "summaryRow"
+    },
+    "e2eMetric": {
+      "key": "e2eMetric",
+      "type": "Metric",
+      "props": {
+        "label": "E2E",
+        "valuePath": "/summary/e2e",
+        "format": "number"
+      },
+      "parentKey": "e2eCard"
+    },
+    "statusCard": {
+      "key": "statusCard",
+      "type": "Card",
+      "props": {
+        "title": "Last Run"
+      },
+      "children": ["statusText"],
+      "parentKey": "summaryRow"
+    },
+    "statusText": {
+      "key": "statusText",
+      "type": "Text",
+      "props": {
+        "content": "No runs yet",
+        "variant": "body",
+        "color": "muted"
+      },
+      "parentKey": "statusCard"
+    },
+    "categoriesSection": {
+      "key": "categoriesSection",
+      "type": "Card",
+      "props": {
+        "title": "Categories"
+      },
+      "children": ["categoriesList"],
+      "parentKey": "page"
+    },
+    "categoriesList": {
+      "key": "categoriesList",
+      "type": "Stack",
+      "props": {
+        "direction": "horizontal",
+        "gap": "sm",
+        "wrap": true
+      },
+      "children": ["catAdapters", "catSessions", "catSubagents", "catTelegram", "catScheduling", "catMemory", "catCore"],
+      "parentKey": "categoriesSection"
+    },
+    "catAdapters": {
+      "key": "catAdapters",
+      "type": "Badge",
+      "props": {
+        "label": "Adapters (3)",
+        "variant": "secondary"
+      },
+      "parentKey": "categoriesList"
+    },
+    "catSessions": {
+      "key": "catSessions",
+      "type": "Badge",
+      "props": {
+        "label": "Sessions (6)",
+        "variant": "secondary"
+      },
+      "parentKey": "categoriesList"
+    },
+    "catSubagents": {
+      "key": "catSubagents",
+      "type": "Badge",
+      "props": {
+        "label": "Subagents (3)",
+        "variant": "secondary"
+      },
+      "parentKey": "categoriesList"
+    },
+    "catTelegram": {
+      "key": "catTelegram",
+      "type": "Badge",
+      "props": {
+        "label": "Telegram (3)",
+        "variant": "secondary"
+      },
+      "parentKey": "categoriesList"
+    },
+    "catScheduling": {
+      "key": "catScheduling",
+      "type": "Badge",
+      "props": {
+        "label": "Scheduling (2)",
+        "variant": "secondary"
+      },
+      "parentKey": "categoriesList"
+    },
+    "catMemory": {
+      "key": "catMemory",
+      "type": "Badge",
+      "props": {
+        "label": "Memory (2)",
+        "variant": "secondary"
+      },
+      "parentKey": "categoriesList"
+    },
+    "catCore": {
+      "key": "catCore",
+      "type": "Badge",
+      "props": {
+        "label": "Core (6)",
+        "variant": "secondary"
+      },
+      "parentKey": "categoriesList"
+    },
+    "testFilesSection": {
+      "key": "testFilesSection",
+      "type": "Card",
+      "props": {
+        "title": "Test Files"
+      },
+      "children": ["testFilesList"],
+      "parentKey": "page"
+    },
+    "testFilesList": {
+      "key": "testFilesList",
+      "type": "DataTable",
+      "props": {
+        "dataPath": "/testFiles",
+        "columns": [
+          {"key": "name", "label": "File", "width": "auto"},
+          {"key": "type", "label": "Type", "width": "80px"},
+          {"key": "tests", "label": "Tests", "width": "60px"},
+          {"key": "status", "label": "Status", "width": "100px"}
+        ],
+        "emptyMessage": "No test files found"
+      },
+      "parentKey": "testFilesSection"
+    }
+  }
+}

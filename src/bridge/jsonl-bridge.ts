@@ -164,11 +164,11 @@ const spawnDetached = (command: string, args: string[], cwd: string) => {
 
 const MODEL_ALIASES: Record<string, string> = {
 	// Claude models
-	opus: 'claude-opus-4-5-20251101',
+	opus: 'claude-opus-4-6',
 	sonnet: 'claude-sonnet-4-5-20250929',
 	haiku: 'claude-haiku-4-5-20251001',
 	// OpenAI Codex models
-	codex: 'gpt-5.2-codex',
+	codex: 'gpt-5.3-codex',
 	'codex-max': 'gpt-5.1-codex-max',
 	// Gemini
 	gemini: 'gemini-3-pro-preview',
@@ -265,7 +265,7 @@ const parseCommand = async (opts: ParseCommandOptions): Promise<CommandResult> =
 	if (trimmed.startsWith('/model')) {
 		const arg = trimmed.slice(6).trim().toLowerCase()
 		if (!arg) {
-			return { handled: true, response: 'Usage: /model <alias>\nAliases: opus, sonnet, haiku, codex\nFull IDs also supported (e.g., claude-opus-4-5-20251101)' }
+			return { handled: true, response: 'Usage: /model <alias>\nAliases: opus, sonnet, haiku, codex\nFull IDs also supported (e.g., claude-opus-4-6)' }
 		}
 		const modelId = resolveModelAlias(arg) ?? arg
 		// Store model preference (will be passed to CLI on next session)
